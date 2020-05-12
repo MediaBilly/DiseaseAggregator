@@ -10,8 +10,6 @@
 #include "../headers/utils.h"
 #include "../headers/list.h"
 
-#define FREE_DA_MEMORY() free(input_dir);
-
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
 }
@@ -20,11 +18,6 @@ int main(int argc, char const *argv[]) {
   // Define arguments and attributes
   unsigned int numWorkers,bufferSize;
   string input_dir;
-  // Create hashtable that maps countries to PID's
-  HashTable countryToPidMap;
-  if (!HashTable_Create(&countryToPidMap,200,100)) {
-    return 1;
-  }
   // Check usage
   if (argc != 7) {
     usage();
@@ -46,9 +39,7 @@ int main(int argc, char const *argv[]) {
   }
   // Read input_dir
   if (!strcmp(argv[5],"-i")) {
-    if ((input_dir = (string)malloc(strlen(argv[6] + 1))) != NULL) {
-      strcpy(input_dir,argv[6]);
-    } else {
+    if ((input_dir = CopyString((string)argv[6])) == NULL) {
       not_enough_memory();
       return 1;
     }
@@ -56,13 +47,13 @@ int main(int argc, char const *argv[]) {
   // Check if numWorkers is > 0
   if (numWorkers == 0) {
     fprintf(stderr,"numWorkers must be > 0\n");
-    FREE_DA_MEMORY()
+    free(input_dir);
     return 1;
   }
   // Check if bufferSize is > 0
   if (bufferSize == 0) {
     fprintf(stderr,"bufferSize must be > 0\n");
-    FREE_DA_MEMORY()
+    free(input_dir);
     return 1;
   }
   // Check if input_dir is really a directory
@@ -70,12 +61,12 @@ int main(int argc, char const *argv[]) {
   if (stat(input_dir,&input_dir_info) != -1) {
     if ((input_dir_info.st_mode & S_IFMT) != S_IFDIR) {
       fprintf(stderr,"%s is not a directory\n",input_dir);
-      FREE_DA_MEMORY()
+      free(input_dir);
       return 1;
     }
   } else {
     perror("Failed to get input_dir info");
-    FREE_DA_MEMORY()
+    free(input_dir);
     return 1;
   }
   // Open input_dir
@@ -85,7 +76,7 @@ int main(int argc, char const *argv[]) {
   // Create countries list
   List countryList;
   if ((!List_Initialize(&countryList))) {
-    FREE_DA_MEMORY()
+    free(input_dir);
     return 1;
   }
   if ((input_dir_ptr = opendir(input_dir)) != NULL) {
@@ -93,7 +84,11 @@ int main(int argc, char const *argv[]) {
     while ((direntp = readdir(input_dir_ptr)) != NULL) {
       if (strcmp(direntp->d_name,".") && strcmp(direntp->d_name,"..") && direntp->d_type == DT_DIR) {
         // Add country to the list
-        List_Insert(countryList,direntp->d_name);
+        if (!List_Insert(countryList,direntp->d_name)) {
+          List_Destroy(&countryList);
+          free(input_dir);
+          return 1;
+        }
         //printf("%s\n",direntp->d_name);
         totalCountries++;
       }
@@ -101,7 +96,8 @@ int main(int argc, char const *argv[]) {
     closedir(input_dir_ptr);
   } else {
     fprintf(stderr,"cannot open %s\n",input_dir);
-    FREE_DA_MEMORY()
+    List_Destroy(&countryList);
+    free(input_dir);
     return 1;
   }
   //pid_t workers[numWorkers];
@@ -111,29 +107,42 @@ int main(int argc, char const *argv[]) {
   pid_t pid;
   // Create an iterator for the countries list
   ListIterator countriesIt = List_CreateIterator(countryList);
+  // Create hashtable that maps countries to PID's
+  HashTable countryToPidMap;
+  if (!HashTable_Create(&countryToPidMap,200,100)) {
+    List_Destroy(&countryList);
+    free(input_dir);
+    return 1;
+  }
   // Create worker processes and distribute country directories to them
   for (i = 0;i < numWorkers;i++) {
     // Create named pipes for the current worker process
     sprintf(read_fifo[i],"worker_r%d",i);
     if (mkfifo(read_fifo[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
-      FREE_DA_MEMORY()
+      HashTable_Destroy(&countryToPidMap,NULL);
+      List_Destroy(&countryList);
+      free(input_dir);
       return 1;
     }
     sprintf(write_fifo[i],"worker_w%d",i);
     if (mkfifo(write_fifo[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
-      FREE_DA_MEMORY()
+      HashTable_Destroy(&countryToPidMap,NULL);
+      List_Destroy(&countryList);
+      free(input_dir);
       return 1;
     }
     if ((pid = fork()) == -1) {
       perror("Fork failed");
-      FREE_DA_MEMORY()
+      HashTable_Destroy(&countryToPidMap,NULL);
+      List_Destroy(&countryList);
+      free(input_dir);
       return 1;
     }
     // Child
     else if (pid == 0) {
-      execl("./worker","worker",read_fifo[i],write_fifo[i],NULL);
+      execl("./worker","worker",read_fifo[i],write_fifo[i],input_dir,NULL);
       perror("Exec failed");
       return 1;
     }
@@ -147,7 +156,9 @@ int main(int argc, char const *argv[]) {
       for (j = 0;j < workerCountries && countriesIt != NULL;j++) {
         // Insert country to the countries hashTable
         if (!HashTable_Insert(countryToPidMap,ListIterator_GetValue(countriesIt),&pid)) {
-          FREE_DA_MEMORY()
+          HashTable_Destroy(&countryToPidMap,NULL);
+          List_Destroy(&countryList);
+          free(input_dir);
           return 1;
         }
         printf("Worker %d took %s\n",pid,ListIterator_GetValue(countriesIt));
@@ -164,6 +175,9 @@ int main(int argc, char const *argv[]) {
     pid_t exited_pid;
     if ((exited_pid = wait(&exit_status)) == -1) {
       perror("Wait failed");
+      HashTable_Destroy(&countryToPidMap,NULL);
+      List_Destroy(&countryList);
+      free(input_dir);
       return 1;
     }
   }
@@ -173,6 +187,8 @@ int main(int argc, char const *argv[]) {
     unlink(write_fifo[i]);
   }
   printf("%u %u %s %u\n",numWorkers,bufferSize,input_dir,totalCountries);
-  FREE_DA_MEMORY()
+  HashTable_Destroy(&countryToPidMap,NULL);
+  List_Destroy(&countryList);
+  free(input_dir);
   return 0;
 }
