@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include "../headers/hashtable.h"
 #include "../headers/utils.h"
 #include "../headers/list.h"
@@ -101,8 +102,8 @@ int main(int argc, char const *argv[]) {
     return 1;
   }
   //pid_t workers[numWorkers];
-  char write_fifo[numWorkers][20];
-  char read_fifo[numWorkers][20];
+  char fifo_aggregator_to_worker[numWorkers][20];
+  char fifo_worker_to_aggregator[numWorkers][20];
   unsigned int i,j,workerCountries,currentCountries = totalCountries;
   pid_t pid;
   // Create an iterator for the countries list
@@ -117,16 +118,16 @@ int main(int argc, char const *argv[]) {
   // Create worker processes and distribute country directories to them
   for (i = 0;i < numWorkers;i++) {
     // Create named pipes for the current worker process
-    sprintf(read_fifo[i],"worker_r%d",i);
-    if (mkfifo(read_fifo[i],FIFO_PERMS) < 0) {
+    sprintf(fifo_worker_to_aggregator[i],"worker_r%d",i);
+    if (mkfifo(fifo_worker_to_aggregator[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
       HashTable_Destroy(&countryToPidMap,NULL);
       List_Destroy(&countryList);
       free(input_dir);
       return 1;
     }
-    sprintf(write_fifo[i],"worker_w%d",i);
-    if (mkfifo(write_fifo[i],FIFO_PERMS) < 0) {
+    sprintf(fifo_aggregator_to_worker[i],"worker_w%d",i);
+    if (mkfifo(fifo_aggregator_to_worker[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
       HashTable_Destroy(&countryToPidMap,NULL);
       List_Destroy(&countryList);
@@ -142,7 +143,9 @@ int main(int argc, char const *argv[]) {
     }
     // Child
     else if (pid == 0) {
-      execl("./worker","worker",read_fifo[i],write_fifo[i],input_dir,NULL);
+      char bufSize[10];
+      sprintf(bufSize,"%d",bufferSize);
+      execl("./worker","worker",fifo_worker_to_aggregator[i],fifo_aggregator_to_worker[i],input_dir,bufSize,NULL);
       perror("Exec failed");
       return 1;
     }
@@ -152,6 +155,8 @@ int main(int argc, char const *argv[]) {
       //workers[i] = pid;
       // Calculate # of countries for the current worker using uniforn distribution round robbin algorithm
       workerCountries = CEIL(currentCountries,numWorkers - i);
+      // Open pipe for writing to the worker process
+      int fd = open(fifo_aggregator_to_worker[i],O_WRONLY);
       // Distribute country directories to the worker process
       for (j = 0;j < workerCountries && countriesIt != NULL;j++) {
         // Insert country to the countries hashTable
@@ -161,12 +166,19 @@ int main(int argc, char const *argv[]) {
           free(input_dir);
           return 1;
         }
-        printf("Worker %d took %s\n",pid,ListIterator_GetValue(countriesIt));
+        // Send country to worker process
+        char country[strlen(ListIterator_GetValue(countriesIt)) + 1];
+        memcpy(country,ListIterator_GetValue(countriesIt),strlen(ListIterator_GetValue(countriesIt)) + 1);
+        country[strlen(ListIterator_GetValue(countriesIt))] = '\n';
+        send_data(fd,country,sizeof(country),bufferSize);
+        //printf("Worker %d took %s\n",pid,ListIterator_GetValue(countriesIt));
         totalCountries++;
         ListIterator_MoveToNext(&countriesIt);
       }
-      printf("Worker %u took %u countries\n",i+1,workerCountries);
-      currentCountries -= workerCountries; 
+      //printf("Worker %u took %u countries\n",i+1,workerCountries);
+      currentCountries -= workerCountries;
+      // Close the pipe
+      close(fd);
     }
   }
   // Wait for workers to finish execution
@@ -183,10 +195,10 @@ int main(int argc, char const *argv[]) {
   }
   // Destroy all fifo's
   for (i = 0;i < numWorkers;i++) {
-    unlink(read_fifo[i]);
-    unlink(write_fifo[i]);
+    unlink(fifo_worker_to_aggregator[i]);
+    unlink(fifo_aggregator_to_worker[i]);
   }
-  printf("%u %u %s %u\n",numWorkers,bufferSize,input_dir,totalCountries);
+  //printf("%u %u %s %u\n",numWorkers,bufferSize,input_dir,totalCountries);
   HashTable_Destroy(&countryToPidMap,NULL);
   List_Destroy(&countryList);
   free(input_dir);

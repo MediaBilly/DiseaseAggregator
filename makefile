@@ -1,5 +1,5 @@
 CC = gcc
-FLAGS = -Wall
+FLAGS = -Wall -g3
 TARGETS = diseaseAggregator worker
 OBJS = diseaseAggregator.o utils.o hashtable.o worker.o list.o
 SRC_DIR = ./src
@@ -9,8 +9,8 @@ all:$(TARGETS)
 diseaseAggregator:diseaseAggregator.o utils.o hashtable.o list.o
 	$(CC) $(FLAGS) -o diseaseAggregator diseaseAggregator.o hashtable.o utils.o list.o
 
-worker:worker.o
-	$(CC) $(FLAGS) -o worker worker.o
+worker:worker.o utils.o
+	$(CC) $(FLAGS) -o worker worker.o utils.o
 
 diseaseAggregator.o:$(SRC_DIR)/diseaseAggregator.c
 	$(CC) $(FLAGS) -o diseaseAggregator.o -c $(SRC_DIR)/diseaseAggregator.c

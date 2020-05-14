@@ -13,5 +13,7 @@ typedef char* string;
 void not_enough_memory();
 string CopyString(string);
 int DestroyString(string*);
+void send_data(int,char*,unsigned int,unsigned int);
+char *receive_data(int,unsigned int);
 
 #endif
