@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
+#include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
@@ -20,12 +21,13 @@ typedef struct {
   unsigned int years60plus;
 } filestat;
 
+List countriesList;
 // Maps each country to another hash table that maps country's diseases an avl tree that contains their records sorted by age
 HashTable recordsHT;
 // Maps a record's ID to the record itself (used for /searchPatientRecord recordID command)
 HashTable recordsByIdHT;
 
-unsigned int bufferSize;
+unsigned int bufferSize,TOTAL,SUCCESS;
 
 void destroyCountryHTdiseaseTables(string disease,void *ht,int argc,va_list valist) {
   HashTable_Destroy((HashTable*)&ht,(int (*)(void**))AvlTree_Destroy);
@@ -56,7 +58,25 @@ void summaryStatistics(string disease,void *statsstruct,int argc,va_list valist)
   send_data(fd,buf,sizeof(buf),strlen(buf));
 }
 
+void logfile(int signum) {
+  signal(SIGINT,logfile);
+  signal(SIGQUIT,logfile);
+  char filename[10 + sizeof(pid_t)];
+  sprintf(filename,"log_file.%d",getpid());
+  FILE *output = fopen(filename,"w");
+  ListIterator countriesIt = List_CreateIterator(countriesList);
+  while (countriesIt != NULL) {
+    fprintf(output,"%s\n",ListIterator_GetValue(countriesIt));
+    ListIterator_MoveToNext(&countriesIt);
+  }
+  fprintf(output,"TOTAL %u\nSUCCESS %u\nFAIL %u\n",TOTAL,SUCCESS,TOTAL - SUCCESS);
+  fclose(output);
+}
+
 int main(int argc, char const *argv[]) {
+  // Register signal handlers
+  signal(SIGINT,logfile);
+  signal(SIGQUIT,logfile);
   if (argc != 5) {
     fprintf(stderr,"Usage:./worker fifo_aggregator_to_worker fifo_worker_to_aggregator input_dir bufferSize\n");
     return 1;
@@ -69,7 +89,6 @@ int main(int argc, char const *argv[]) {
   // Open fifo_aggregator_to_worker to read the country directory names to be opened
   int fifo_aggregator_to_worker_fd = open(fifo_aggregator_to_worker,O_RDONLY);
   // Initialize countries list
-  List countriesList;
   if (!List_Initialize(&countriesList)) {
     close(fifo_aggregator_to_worker_fd);
     return 1;
@@ -229,6 +248,12 @@ int main(int argc, char const *argv[]) {
   }
   // Close fifo_worker_to_aggregator_fd
   close(fifo_worker_to_aggregator_fd);
+  // Wait for commands from the aggregator
+  
+  while(TRUE) {
+    //printf("---\n");
+  }
+  printf("FINITO!!!\n");
   // Destroy diseas hash tables in country hash table
   HashTable_ExecuteFunctionForAllKeys(recordsHT,destroyCountryHTdiseaseTables,0);
   // Destroy country hash table

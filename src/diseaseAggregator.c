@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -13,6 +14,15 @@
 
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
+}
+
+void printCountryPIDs(string country,void *pidptr,int argc,va_list valist) {
+  pid_t pid = *(pid_t*)pidptr;
+  printf("%s %d\n",country,pid);
+}
+
+void destroyCountriesHT(string country,void *pidptr,int argc,va_list valist) {
+  free(pidptr);
 }
 
 int main(int argc, char const *argv[]) {
@@ -90,7 +100,6 @@ int main(int argc, char const *argv[]) {
           free(input_dir);
           return 1;
         }
-        //printf("%s\n",direntp->d_name);
         totalCountries++;
       }
     }
@@ -101,7 +110,6 @@ int main(int argc, char const *argv[]) {
     free(input_dir);
     return 1;
   }
-  //pid_t workers[numWorkers];
   char fifo_aggregator_to_worker[numWorkers][20];
   char fifo_worker_to_aggregator[numWorkers][20];
   unsigned int i,j,workerCountries,currentCountries = totalCountries;
@@ -115,6 +123,8 @@ int main(int argc, char const *argv[]) {
     free(input_dir);
     return 1;
   }
+  // Keep pids for later usage
+  pid_t pids[numWorkers];
   // Create worker processes and distribute country directories to them
   for (i = 0;i < numWorkers;i++) {
     // Create named pipes for the current worker process
@@ -151,8 +161,8 @@ int main(int argc, char const *argv[]) {
     }
     // Parent
     else {
-      // Save current worker's pid for later use
-      //workers[i] = pid;
+      // Save pid for later use
+      pids[i] = pid;
       // Calculate # of countries for the current worker using uniforn distribution round robbin algorithm
       workerCountries = CEIL(currentCountries,numWorkers - i);
       // Open pipe for writing to the worker process
@@ -160,7 +170,16 @@ int main(int argc, char const *argv[]) {
       // Distribute country directories to the worker process
       for (j = 0;j < workerCountries && countriesIt != NULL;j++) {
         // Insert country to the countries hashTable
-        if (!HashTable_Insert(countryToPidMap,ListIterator_GetValue(countriesIt),&pid)) {
+        pid_t *pidPtr;
+        if ((pidPtr = (pid_t*)malloc(sizeof(pid_t))) == NULL) {
+          not_enough_memory();
+          HashTable_Destroy(&countryToPidMap,NULL);
+          List_Destroy(&countryList);
+          free(input_dir);
+          return 1;
+        }
+        memcpy(pidPtr,&pid,sizeof(pid_t));
+        if (!HashTable_Insert(countryToPidMap,ListIterator_GetValue(countriesIt),pidPtr)) {
           HashTable_Destroy(&countryToPidMap,NULL);
           List_Destroy(&countryList);
           free(input_dir);
@@ -171,18 +190,15 @@ int main(int argc, char const *argv[]) {
         memcpy(country,ListIterator_GetValue(countriesIt),strlen(ListIterator_GetValue(countriesIt)) + 1);
         country[strlen(ListIterator_GetValue(countriesIt))] = '\n';
         send_data(fd,country,sizeof(country),bufferSize);
-        //printf("Worker %d took %s\n",pid,ListIterator_GetValue(countriesIt));
         totalCountries++;
         ListIterator_MoveToNext(&countriesIt);
       }
-      //printf("Worker %u took %u countries\n",i+1,workerCountries);
       currentCountries -= workerCountries;
       // Close the pipe
       close(fd);
     }
   }
   // Wait for statistics and ready state from all workers
-  
   for (i = 0;i < numWorkers;i++) {
     int fd = open(fifo_worker_to_aggregator[i],O_RDONLY);
     char *statistics = receive_data(fd,bufferSize,TRUE);
@@ -191,6 +207,41 @@ int main(int argc, char const *argv[]) {
     close(fd);
   }
   // Start command execution
+  boolean running = TRUE;
+  string line = NULL,command;
+  string *args;
+  size_t len;
+  while (running) {
+    // Read command name
+    if(getline(&line,&len,stdin) == -1) {
+      running = FALSE;
+      break;
+    }
+    IgnoreNewLine(line);
+    if (strlen(line) == 0) {
+      DestroyString(&line);
+      continue;
+    }
+    argc = wordCount(line);
+    args = SplitString(line," ");
+    command = args[0];
+    // Determine command type
+    if (!strcmp("/listCountries",command)) {
+      HashTable_ExecuteFunctionForAllKeys(countryToPidMap,printCountryPIDs,0);
+    } else if (!strcmp("/exit",command)) {
+      // TODO: kill worker processes (for the moment they stop themselves without waiting for queries)
+      running = FALSE;
+    } else {
+      printf("Command %s not found.\n",command);
+    }
+    // Free some memory
+    free(args);
+    DestroyString(&line);
+  }
+  // Kill all the processes
+  for (i = 0;i < numWorkers;i++) {
+    kill(pids[i],SIGKILL);
+  }
   // Wait for workers to finish execution
   for (i = 0;i < numWorkers;i++) {
     int exit_status;
@@ -208,7 +259,7 @@ int main(int argc, char const *argv[]) {
     unlink(fifo_worker_to_aggregator[i]);
     unlink(fifo_aggregator_to_worker[i]);
   }
-  //printf("%u %u %s %u\n",numWorkers,bufferSize,input_dir,totalCountries);
+  HashTable_ExecuteFunctionForAllKeys(countryToPidMap,destroyCountriesHT,0);
   HashTable_Destroy(&countryToPidMap,NULL);
   List_Destroy(&countryList);
   free(input_dir);

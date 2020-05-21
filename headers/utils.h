@@ -17,5 +17,9 @@ string CopyString(string);
 int DestroyString(string*);
 void send_data(int,char*,unsigned int,unsigned int);
 char *receive_data(int,unsigned int,boolean);
+// Counts # of words in a string
+unsigned int wordCount(string);
+string IgnoreNewLine(string);
+string* SplitString(string,string);
 
 #endif
