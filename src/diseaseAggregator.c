@@ -118,7 +118,7 @@ int main(int argc, char const *argv[]) {
   // Create worker processes and distribute country directories to them
   for (i = 0;i < numWorkers;i++) {
     // Create named pipes for the current worker process
-    sprintf(fifo_worker_to_aggregator[i],"worker_r%d",i);
+    sprintf(fifo_worker_to_aggregator[i],"worker_w%d",i);
     if (mkfifo(fifo_worker_to_aggregator[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
       HashTable_Destroy(&countryToPidMap,NULL);
@@ -126,7 +126,7 @@ int main(int argc, char const *argv[]) {
       free(input_dir);
       return 1;
     }
-    sprintf(fifo_aggregator_to_worker[i],"worker_w%d",i);
+    sprintf(fifo_aggregator_to_worker[i],"worker_r%d",i);
     if (mkfifo(fifo_aggregator_to_worker[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
       HashTable_Destroy(&countryToPidMap,NULL);
@@ -145,7 +145,7 @@ int main(int argc, char const *argv[]) {
     else if (pid == 0) {
       char bufSize[10];
       sprintf(bufSize,"%d",bufferSize);
-      execl("./worker","worker",fifo_worker_to_aggregator[i],fifo_aggregator_to_worker[i],input_dir,bufSize,NULL);
+      execl("./worker","worker",fifo_aggregator_to_worker[i],fifo_worker_to_aggregator[i],input_dir,bufSize,NULL);
       perror("Exec failed");
       return 1;
     }
@@ -181,6 +181,16 @@ int main(int argc, char const *argv[]) {
       close(fd);
     }
   }
+  // Wait for statistics and ready state from all workers
+  
+  for (i = 0;i < numWorkers;i++) {
+    int fd = open(fifo_worker_to_aggregator[i],O_RDONLY);
+    char *statistics = receive_data(fd,bufferSize,TRUE);
+    printf("%s\n",statistics);
+    free(statistics);
+    close(fd);
+  }
+  // Start command execution
   // Wait for workers to finish execution
   for (i = 0;i < numWorkers;i++) {
     int exit_status;

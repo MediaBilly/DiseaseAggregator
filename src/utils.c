@@ -42,7 +42,7 @@ void send_data(int fd,char *data,unsigned int dataSize,unsigned int bufferSize) 
 }
 
 // Function that reads data from a pipe and returns it to a dynamically allocated array
-char *receive_data(int fd,unsigned int bufferSize) {
+char *receive_data(int fd,unsigned int bufferSize,boolean toString) {
   ssize_t bytes_read = 0;
   char buffer[bufferSize];
   char *tmp,*bytestring = NULL;
@@ -57,6 +57,11 @@ char *receive_data(int fd,unsigned int bufferSize) {
       bytestring = tmp;
     }
     memcpy(bytestring + total_read - bytes_read,buffer,bytes_read);
+  }
+  // Set \0 for string ending if needed
+  if (toString) {
+    bytestring = realloc(bytestring,total_read + 1);
+    bytestring[total_read] = 0;
   }
   return bytestring;
 }

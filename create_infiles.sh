@@ -65,7 +65,7 @@ mkdir $input_dir
 cd $input_dir
 
 # Initialize recordId iterator
-recordId=1
+recordId=0
 
 # Loop through all the countries
 for country in $(seq 0 $((${#countries[@]}  - 1)))
@@ -86,13 +86,24 @@ do
     # Add numRecordsPerFile records in that file
     for recordIndex in $(seq 1 ${numRecordsPerFile})
     do
-      recordType=${recordTypes[($(expr $RANDOM % ${#recordTypes[@]}))]}
-      patientFirstName=${first_names[($(expr $RANDOM % ${#first_names[@]}))]}
-      patientLastName=${last_names[($(expr $RANDOM % ${#last_names[@]}))]}
-      disease=${diseases[($(expr $RANDOM % ${#diseases[@]}))]}
-      age=($(expr $RANDOM % 120 + 1))
-      echo $recordId $recordType $patientFirstName $patientLastName $disease $age >> $filename
-      recordId=$(($recordId+1))
+      # 8/10 records are ENTER
+      if [ "$recordIndex" -eq "1" ] || [ "$(expr $RANDOM % 10)" -le "8" ]; then
+        # If record decided to be ENTER type create a new one
+        recordType=${recordTypes[0]}
+        patientFirstName=${first_names[($(expr $RANDOM % ${#first_names[@]}))]}
+        patientLastName=${last_names[($(expr $RANDOM % ${#last_names[@]}))]}
+        disease=${diseases[($(expr $RANDOM % ${#diseases[@]}))]}
+        age=($(expr $RANDOM % 120 + 1))
+        echo $recordId $recordType $patientFirstName $patientLastName $disease $age >> $filename
+        recordId=$(($recordId+1))
+      else
+        # If record decided to be EXIT choose one from the already created ones and mark it as exit
+        randomFile=($(ls | shuf -n 1))
+        # Get random record from the selected file
+        randomRecord=($(shuf $randomFile -n 1))
+        randomRecord=${randomRecord[*]}
+        echo ${randomRecord/ENTER/EXIT} >> $filename
+      fi
     done
   done
   # Go back 
