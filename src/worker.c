@@ -21,13 +21,18 @@ typedef struct {
   unsigned int years60plus;
 } filestat;
 
+// Declare global variables(because they are needed for signal handlers)
 List countriesList;
 // Maps each country to another hash table that maps country's diseases an avl tree that contains their records sorted by age
 HashTable recordsHT;
 // Maps a record's ID to the record itself (used for /searchPatientRecord recordID command)
 HashTable recordsByIdHT;
+// A hash table that is used as a set of all the files currently handling
+HashTable countryFilesHT;
 
 unsigned int bufferSize,TOTAL,SUCCESS;
+string fifo_worker_to_aggregator,fifo_aggregator_to_worker,input_dir;
+boolean running = TRUE;
 
 void destroyCountryHTdiseaseTables(string disease,void *ht,int argc,va_list valist) {
   HashTable_Destroy((HashTable*)&ht,(int (*)(void**))AvlTree_Destroy);
@@ -71,50 +76,10 @@ void logfile(int signum) {
   }
   fprintf(output,"TOTAL %u\nSUCCESS %u\nFAIL %u\n",TOTAL,SUCCESS,TOTAL - SUCCESS);
   fclose(output);
+  running = FALSE;
 }
 
-int main(int argc, char const *argv[]) {
-  // Register signal handlers
-  signal(SIGINT,logfile);
-  signal(SIGQUIT,logfile);
-  if (argc != 5) {
-    fprintf(stderr,"Usage:./worker fifo_aggregator_to_worker fifo_worker_to_aggregator input_dir bufferSize\n");
-    return 1;
-  }
-  // Read arguments
-  string fifo_worker_to_aggregator = (string)argv[2];
-  string fifo_aggregator_to_worker = (string)argv[1]; 
-  string input_dir = (string) argv[3];
-  bufferSize = atoi(argv[4]);
-  // Open fifo_aggregator_to_worker to read the country directory names to be opened
-  int fifo_aggregator_to_worker_fd = open(fifo_aggregator_to_worker,O_RDONLY);
-  // Initialize countries list
-  if (!List_Initialize(&countriesList)) {
-    close(fifo_aggregator_to_worker_fd);
-    return 1;
-  }
-  // Read the countries sent by diseaseAggregator
-  char *countries = receive_data(fifo_aggregator_to_worker_fd,bufferSize,TRUE);
-  if (countries != NULL) {
-    string country = strtok(countries,"\n");
-    while (country != NULL) {
-      List_Insert(countriesList,country);
-      country = strtok(NULL,"\n");
-    }
-  }
-  // Free memory and fofo needed for receiving the countries
-  free(countries);
-  close(fifo_aggregator_to_worker_fd);
-  // Initialize hashtables
-  if (!HashTable_Create(&recordsHT,200,100)) {
-    List_Destroy(&countriesList);
-    return 1;
-  }
-  if (!HashTable_Create(&recordsByIdHT,200,100)) {
-    HashTable_Destroy(&recordsHT,NULL);
-    List_Destroy(&countriesList);
-    return 1;
-  }
+void read_input_files() {
   // Open fifo_worker_to_aggregator to send summary statistics back to the aggregator
   int fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
   // Foreach country read all the files contained in it's folder and save the records
@@ -135,6 +100,10 @@ int main(int argc, char const *argv[]) {
           FILE *recordsFile;
           char filePath[strlen(input_dir) + strlen(country) + strlen(date) + 3];
           sprintf(filePath,"%s/%s",path,date);
+          // Check if that file was already read
+          if (HashTable_SearchKey(countryFilesHT,filePath) != NULL) {
+            continue;
+          }
           if ((recordsFile = fopen(filePath,"r")) == NULL) {
             perror("fopen");
             continue;
@@ -142,6 +111,14 @@ int main(int argc, char const *argv[]) {
           // Maps a disease to a filestat structure to hold summary statistics for that file
           HashTable filestatsHT;
           if (!HashTable_Create(&filestatsHT,200,100)) {
+            continue;
+          }
+          // Insert the file path in the country files hashtable with an empty list
+          string pathCopy;
+          if ((pathCopy = CopyString(filePath)) == NULL) {
+            continue;
+          }
+          if (!HashTable_Insert(countryFilesHT,path,pathCopy)) {
             continue;
           }
           // Read all the lines(records) from the file
@@ -248,11 +225,82 @@ int main(int argc, char const *argv[]) {
   }
   // Close fifo_worker_to_aggregator_fd
   close(fifo_worker_to_aggregator_fd);
-  // Wait for commands from the aggregator
-  
-  while(TRUE) {
-    //printf("---\n");
+}
+
+void reload_files() {
+  printf("RELOADING WORKER FILES\n");
+  // Read records from new files
+  read_input_files();
+  // Notify the parent to read the statistics
+  kill(getppid(),SIGUSR1);
+}
+
+int main(int argc, char const *argv[]) {
+  // Register signal handlers
+  signal(SIGINT,logfile);
+  signal(SIGQUIT,logfile);
+  signal(SIGUSR1,reload_files);
+  if (argc != 5) {
+    fprintf(stderr,"Usage:./worker fifo_aggregator_to_worker fifo_worker_to_aggregator input_dir bufferSize\n");
+    return 1;
   }
+  // Read arguments
+  fifo_worker_to_aggregator = (string)argv[2];
+  fifo_aggregator_to_worker = (string)argv[1]; 
+  input_dir = (string) argv[3];
+  bufferSize = atoi(argv[4]);
+  // Open fifo_aggregator_to_worker to read the country directory names to be opened
+  int fifo_aggregator_to_worker_fd = open(fifo_aggregator_to_worker,O_RDONLY);
+  // Initialize countries list
+  if (!List_Initialize(&countriesList)) {
+    close(fifo_aggregator_to_worker_fd);
+    return 1;
+  }
+  // Read the countries sent by diseaseAggregator
+  char *countries = receive_data(fifo_aggregator_to_worker_fd,bufferSize,TRUE);
+  if (countries != NULL) {
+    string country = strtok(countries,"\n");
+    while (country != NULL) {
+      List_Insert(countriesList,country);
+      country = strtok(NULL,"\n");
+    }
+  }
+  // Free memory and fifo needed for receiving the countries
+  free(countries);
+  close(fifo_aggregator_to_worker_fd);
+  // Initialize hashtables
+  if (!HashTable_Create(&recordsHT,200,100)) {
+    List_Destroy(&countriesList);
+    return 1;
+  }
+  if (!HashTable_Create(&recordsByIdHT,200,100)) {
+    HashTable_Destroy(&recordsHT,NULL);
+    List_Destroy(&countriesList);
+    return 1;
+  }
+  if (!HashTable_Create(&countryFilesHT,200,100)) {
+    HashTable_Destroy(&recordsByIdHT,NULL);
+    HashTable_Destroy(&recordsHT,NULL);
+    List_Destroy(&countriesList);
+  }
+  // Read input files
+  read_input_files();
+  // Wait for commands from the aggregator
+  char *receivedData;
+  int readFd  = open(fifo_aggregator_to_worker,O_RDONLY | O_NONBLOCK);
+  while(running) {
+    // Read command
+    receivedData = receive_data(readFd,bufferSize,TRUE);
+    if (receivedData > 0) {
+      // TODO: Do sth with the received data(commands).For now,just echo it
+      //printf("%s\n",receivedData);
+      int writeFd = open(fifo_worker_to_aggregator,O_WRONLY);
+      send_data(writeFd,receivedData,strlen(receivedData),bufferSize);
+      free(receivedData);
+      close(writeFd);
+    }
+  }
+  close(readFd);
   printf("FINITO!!!\n");
   // Destroy diseas hash tables in country hash table
   HashTable_ExecuteFunctionForAllKeys(recordsHT,destroyCountryHTdiseaseTables,0);
@@ -260,6 +308,8 @@ int main(int argc, char const *argv[]) {
   HashTable_Destroy(&recordsHT,NULL);
   // Destroy records only from id mapped hash table
   HashTable_Destroy(&recordsByIdHT,(int (*)(void**))PatientRecord_Destroy);
+  // Destroy country files hash table
+  HashTable_Destroy(&countryFilesHT,(int (*)(void**))DestroyString);
   List_Destroy(&countriesList);
   return 0;
 }

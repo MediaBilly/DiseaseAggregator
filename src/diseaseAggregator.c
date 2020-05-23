@@ -12,6 +12,10 @@
 #include "../headers/utils.h"
 #include "../headers/list.h"
 
+List countryList;
+boolean running;
+unsigned int TOTAL,SUCCESS;
+
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
 }
@@ -25,7 +29,17 @@ void destroyCountriesHT(string country,void *pidptr,int argc,va_list valist) {
   free(pidptr);
 }
 
+void finish_execution(int signum) {
+  signal(SIGINT,finish_execution);
+  signal(SIGQUIT,finish_execution);
+  running = FALSE;
+  fclose(stdin);
+}
+
 int main(int argc, char const *argv[]) {
+  // Register signal handlers
+  signal(SIGINT,finish_execution);
+  signal(SIGQUIT,finish_execution);
   // Define arguments and attributes
   unsigned int numWorkers,bufferSize;
   string input_dir;
@@ -51,7 +65,6 @@ int main(int argc, char const *argv[]) {
   // Read input_dir
   if (!strcmp(argv[5],"-i")) {
     if ((input_dir = CopyString((string)argv[6])) == NULL) {
-      not_enough_memory();
       return 1;
     }
   }
@@ -80,12 +93,17 @@ int main(int argc, char const *argv[]) {
     free(input_dir);
     return 1;
   }
+  // Check if 0 < buffer size is <= pipe size
+  if (0 > bufferSize || bufferSize > pipe_size()) {
+    printf("Invalid buffer size.\n");
+    free(input_dir);
+    return 1;
+  }
   // Open input_dir
   DIR *input_dir_ptr;
   struct dirent *direntp;
   unsigned int totalCountries = 0;
   // Create countries list
-  List countryList;
   if ((!List_Initialize(&countryList))) {
     free(input_dir);
     return 1;
@@ -207,13 +225,16 @@ int main(int argc, char const *argv[]) {
     close(fd);
   }
   // Start command execution
-  boolean running = TRUE;
+  running = TRUE;
   string line = NULL,command;
   string *args;
   size_t len;
   while (running) {
     // Read command name
     if(getline(&line,&len,stdin) == -1) {
+      if (line != NULL) {
+        free(line);
+      }
       running = FALSE;
       break;
     }
@@ -231,6 +252,51 @@ int main(int argc, char const *argv[]) {
     } else if (!strcmp("/exit",command)) {
       // TODO: kill worker processes (for the moment they stop themselves without waiting for queries)
       running = FALSE;
+    } else if (!strcmp("/diseaseFrequency",command)) {
+      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
+      send_data(fd,"/diseaseFrequency",strlen("/diseaseFrequency"),bufferSize);
+      close(fd);
+      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
+      char *answer = receive_data(readFd,bufferSize,TRUE);
+      printf("%s\n",answer);
+      free(answer);
+      close(readFd);
+    } else if (!strcmp("/topk-AgeRanges",command)) {
+      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
+      send_data(fd,"/topk-AgeRanges",strlen("/topk-AgeRanges"),bufferSize);
+      close(fd);
+      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
+      char *answer = receive_data(readFd,bufferSize,TRUE);
+      printf("%s\n",answer);
+      free(answer);
+      close(readFd);
+    } else if (!strcmp("/searchPatientRecord",command)) {
+      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
+      send_data(fd,"/searchPatientRecord",strlen("/searchPatientRecord"),bufferSize);
+      close(fd);
+      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
+      char *answer = receive_data(readFd,bufferSize,TRUE);
+      printf("%s\n",answer);
+      free(answer);
+      close(readFd);
+    } else if (!strcmp("/numPatientAdmissions",command)) {
+      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
+      send_data(fd,"/numPatientAdmissions",strlen("/numPatientAdmissions"),bufferSize);
+      close(fd);
+      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
+      char *answer = receive_data(readFd,bufferSize,TRUE);
+      printf("%s\n",answer);
+      free(answer);
+      close(readFd);
+    } else if (!strcmp("/numPatientDischarges",command)) {
+      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
+      send_data(fd,"/numPatientDischarges",strlen("/numPatientDischarges"),bufferSize);
+      close(fd);
+      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
+      char *answer = receive_data(readFd,bufferSize,TRUE);
+      printf("%s\n",answer);
+      free(answer);
+      close(readFd);
     } else {
       printf("Command %s not found.\n",command);
     }
@@ -238,7 +304,7 @@ int main(int argc, char const *argv[]) {
     free(args);
     DestroyString(&line);
   }
-  // Kill all the processes
+  // Kill all the processes and close all the fifo's
   for (i = 0;i < numWorkers;i++) {
     kill(pids[i],SIGKILL);
   }
@@ -259,6 +325,17 @@ int main(int argc, char const *argv[]) {
     unlink(fifo_worker_to_aggregator[i]);
     unlink(fifo_aggregator_to_worker[i]);
   }
+  // Create logfile
+  char filename[10 + sizeof(pid_t)];
+  sprintf(filename,"log_file.%d",getpid());
+  FILE *output = fopen(filename,"w");
+  countriesIt = List_CreateIterator(countryList);
+  while (countriesIt != NULL) {
+    fprintf(output,"%s\n",ListIterator_GetValue(countriesIt));
+    ListIterator_MoveToNext(&countriesIt);
+  }
+  fprintf(output,"TOTAL %u\nSUCCESS %u\nFAIL %u\n",TOTAL,SUCCESS,TOTAL - SUCCESS);
+  fclose(output);
   HashTable_ExecuteFunctionForAllKeys(countryToPidMap,destroyCountriesHT,0);
   HashTable_Destroy(&countryToPidMap,NULL);
   List_Destroy(&countryList);

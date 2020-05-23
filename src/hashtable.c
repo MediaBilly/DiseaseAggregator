@@ -64,7 +64,10 @@ int Bucket_InsertRecord(char *bucketData,unsigned int bucketSize,string key,void
     // We found an available position to store the new record
     if (currentKey == NULL) {
       // Insert key (string pointer)
-      string keyCopy = CopyString(key);
+      string keyCopy;
+      if ((keyCopy = CopyString(key)) == NULL) {
+        return FALSE;
+      }
       memcpy(bucketData + offset,&keyCopy,sizeof(string));
       // Insert value
       memcpy(bucketData + offset + sizeof(string),&value,sizeof(void*));

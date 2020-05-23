@@ -5,6 +5,18 @@
 #include <fcntl.h>
 #include "../headers/utils.h"
 
+int pipe_size() {
+  int p[2];
+  if (pipe(p) == -1) {
+    perror("pipe");
+    exit(1);
+  }
+  int pipe_size = fpathconf(p[0],_PC_PIPE_BUF);
+  close(p[0]);
+  close(p[1]);
+  return pipe_size;
+}
+
 void not_enough_memory() {
   perror("malloc");
 }
@@ -13,6 +25,8 @@ string CopyString(string str) {
   string ret = NULL;
   if ((ret = (string)malloc(strlen(str) + 1)) != NULL) {
     strcpy(ret,str);
+  } else {
+    not_enough_memory();
   }
   return ret;
 }
@@ -57,6 +71,9 @@ char *receive_data(int fd,unsigned int bufferSize,boolean toString) {
       bytestring = tmp;
     }
     memcpy(bytestring + total_read - bytes_read,buffer,bytes_read);
+  }
+  if (total_read == 0) {
+    return NULL;
   }
   // Set \0 for string ending if needed
   if (toString) {

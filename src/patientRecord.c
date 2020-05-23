@@ -26,22 +26,18 @@ patientRecord PatientRecord_Create(string recordID,string patientFirstName,strin
   }
   // Copy record contents
   if ((record->recordID = CopyString(recordID)) == NULL) {
-    not_enough_memory();
     PatientRecord_Destroy(&record);
     return NULL;
   }
   if ((record->patientFirstName = CopyString(patientFirstName)) == NULL) {
-    not_enough_memory();
     PatientRecord_Destroy(&record);
     return NULL;
   }
   if ((record->patientLastName = CopyString(patientLastName)) == NULL) {
-    not_enough_memory();
     PatientRecord_Destroy(&record);
     return NULL;
   }
   if ((record->disease = CopyString(disease)) == NULL) {
-    not_enough_memory();
     PatientRecord_Destroy(&record);
     return NULL;
   }

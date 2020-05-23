@@ -12,6 +12,7 @@ typedef int boolean;
 #define TRUE 1
 #define FALSE 0
 
+int pipe_size();
 void not_enough_memory();
 string CopyString(string);
 int DestroyString(string*);
