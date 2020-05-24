@@ -12,9 +12,19 @@
 #include "../headers/utils.h"
 #include "../headers/list.h"
 
+// Maps countries to pids
+HashTable countryToPidMap;
+// Maps a pid to a list of all it's countries
+HashTable pidCountriesHT;
+// Maps a pid to it's fifo_aggregator_to_worker
+HashTable pid_fifo_aggregator_to_workerHT;
+// Maps a pid to it's fifo_worker_to_aggregator
+HashTable pid_fifo_worker_to_aggregatorHT;
 List countryList;
 boolean running;
+string input_dir;
 unsigned int TOTAL,SUCCESS;
+unsigned int numWorkers,bufferSize;
 
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
@@ -36,13 +46,97 @@ void finish_execution(int signum) {
   fclose(stdin);
 }
 
+void respawn_worker() {
+  signal(SIGCHLD,respawn_worker);
+  // Get the pid of the exited process
+  pid_t exitedPID = wait(NULL);
+  char pidStr[sizeof(pid_t) + 1];
+  sprintf(pidStr,"%d",exitedPID);
+  // Get the countries list of the exited pid
+  List countriesList = HashTable_SearchKey(pidCountriesHT,pidStr);
+  // Delete old entry from pidCountriesHT
+  HashTable_Delete(pidCountriesHT,pidStr,NULL);
+  // Get fifo's from hash tables to give the same to the new child
+  string fifo_aggregator_to_worker = HashTable_SearchKey(pid_fifo_aggregator_to_workerHT,pidStr);
+  string fifo_worker_to_aggregator = HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,pidStr);
+  // Delete them from the hash table (because they are mapped with the old pid)
+  HashTable_Delete(pid_fifo_aggregator_to_workerHT,pidStr,NULL);
+  HashTable_Delete(pid_fifo_worker_to_aggregatorHT,pidStr,NULL);
+  // Fork new worker process
+  pid_t newPID = fork();
+  // Fork error
+  if (newPID == -1) {
+    perror("Fork Failed");
+  }
+  // Child
+  else if (newPID == 0) {
+    char bufSize[10];
+    sprintf(bufSize,"%d",bufferSize);
+    execl("./worker","worker",fifo_aggregator_to_worker,fifo_worker_to_aggregator,input_dir,bufSize,NULL);
+    perror("Exec failed");
+    exit(1);
+  }
+  // Parent
+  else {
+    // Create an entry for the new pid's country list and insert the old list as value
+    char newPidStr[sizeof(pid_t) + 1];
+    sprintf(newPidStr,"%d",newPID);
+    if (!HashTable_Insert(pidCountriesHT,newPidStr,countriesList)) {
+      kill(newPID,SIGKILL);
+    }
+    // Send the old worker's countries to the new one
+    ListIterator it = List_CreateIterator(countriesList);
+    int fd = open(fifo_aggregator_to_worker,O_WRONLY);
+    while (it != NULL) {
+      pid_t *pidPtr;
+      if ((pidPtr = (pid_t*)malloc(sizeof(pid_t))) == NULL) {
+        close(fd);
+        kill(newPID,SIGKILL);
+      }
+      *pidPtr = newPID;
+      char country[strlen(ListIterator_GetValue(it)) + 1];
+      memcpy(country,ListIterator_GetValue(it),strlen(ListIterator_GetValue(it)) + 1);
+      country[strlen(ListIterator_GetValue(it))] = '\n';
+      send_data(fd,country,sizeof(country),bufferSize);
+      free(HashTable_SearchKey(countryToPidMap,ListIterator_GetValue(it)));
+      HashTable_ReplaceKeyValue(countryToPidMap,ListIterator_GetValue(it),NULL,pidPtr);
+      ListIterator_MoveToNext(&it);
+    }
+    close(fd);
+    // Reinsert fifos to the hash tables with the new pid this time
+    if (!HashTable_Insert(pid_fifo_aggregator_to_workerHT,newPidStr,fifo_aggregator_to_worker) || !HashTable_Insert(pid_fifo_worker_to_aggregatorHT,newPidStr,fifo_worker_to_aggregator)) {
+      close(fd);
+      kill(newPID,SIGKILL);
+    }
+  }
+}
+
+// Read emergency statistics from new files loaded from a worker after he received SIGUSR1 signal
+void async_statistics() {
+
+}
+
+void kill_all_workers(string pidstr,void *listptr,int argc,va_list valist) {
+  pid_t pid = atoi(pidstr);
+  printf("KILLING: %d\n",pid);
+  kill(pid,SIGKILL);// THE ASSIGNMENT WANTS SIGKILL FOR SOME REASON BUT IT'S AN IRREGULAR METHOD SO SEND SIGINT FOR THE MOMENT
+}
+
+void middle_free() {
+  HashTable_Destroy(&pid_fifo_worker_to_aggregatorHT,NULL);
+  HashTable_Destroy(&pid_fifo_aggregator_to_workerHT,NULL);
+  HashTable_Destroy(&pidCountriesHT,NULL);
+  HashTable_Destroy(&countryToPidMap,NULL);
+  List_Destroy(&countryList);
+  free(input_dir);
+}
+
 int main(int argc, char const *argv[]) {
   // Register signal handlers
   signal(SIGINT,finish_execution);
   signal(SIGQUIT,finish_execution);
-  // Define arguments and attributes
-  unsigned int numWorkers,bufferSize;
-  string input_dir;
+  signal(SIGCHLD,respawn_worker);
+  signal(SIGUSR1,async_statistics);
   // Check usage
   if (argc != 7) {
     usage();
@@ -134,39 +228,54 @@ int main(int argc, char const *argv[]) {
   pid_t pid;
   // Create an iterator for the countries list
   ListIterator countriesIt = List_CreateIterator(countryList);
-  // Create hashtable that maps countries to PID's
-  HashTable countryToPidMap;
-  if (!HashTable_Create(&countryToPidMap,200,100)) {
+  // Create the hashtable that maps countries to PID's
+  if (!HashTable_Create(&countryToPidMap,200)) {
     List_Destroy(&countryList);
     free(input_dir);
     return 1;
   }
-  // Keep pids for later usage
-  pid_t pids[numWorkers];
+  // Create the hashtable that maps a pid to a list of all it's countries
+  if (!HashTable_Create(&pidCountriesHT,200)) {
+    HashTable_Destroy(&countryToPidMap,NULL);
+    List_Destroy(&countryList);
+    free(input_dir);
+    return 1;
+  }
+  // Create the hashtable that maps a pid to it's fifo_aggregator_to_worker
+  if (!HashTable_Create(&pid_fifo_aggregator_to_workerHT,200)) {
+    HashTable_Destroy(&pidCountriesHT,NULL);
+    HashTable_Destroy(&countryToPidMap,NULL);
+    List_Destroy(&countryList);
+    free(input_dir);
+    return 1;
+  }
+  // Create the hashtable that maps a pid to it's fifo_worker_to_aggregator
+  if (!HashTable_Create(&pid_fifo_worker_to_aggregatorHT,200)) {
+    HashTable_Destroy(&pid_fifo_worker_to_aggregatorHT,NULL);
+    HashTable_Destroy(&pidCountriesHT,NULL);
+    HashTable_Destroy(&countryToPidMap,NULL);
+    List_Destroy(&countryList);
+    free(input_dir);
+    return 1;
+  }
   // Create worker processes and distribute country directories to them
   for (i = 0;i < numWorkers;i++) {
     // Create named pipes for the current worker process
     sprintf(fifo_worker_to_aggregator[i],"worker_w%d",i);
     if (mkfifo(fifo_worker_to_aggregator[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
-      HashTable_Destroy(&countryToPidMap,NULL);
-      List_Destroy(&countryList);
-      free(input_dir);
+      middle_free();
       return 1;
     }
     sprintf(fifo_aggregator_to_worker[i],"worker_r%d",i);
     if (mkfifo(fifo_aggregator_to_worker[i],FIFO_PERMS) < 0) {
       perror("Fifo creation error");
-      HashTable_Destroy(&countryToPidMap,NULL);
-      List_Destroy(&countryList);
-      free(input_dir);
+      middle_free();
       return 1;
     }
     if ((pid = fork()) == -1) {
       perror("Fork failed");
-      HashTable_Destroy(&countryToPidMap,NULL);
-      List_Destroy(&countryList);
-      free(input_dir);
+      middle_free();
       return 1;
     }
     // Child
@@ -179,28 +288,70 @@ int main(int argc, char const *argv[]) {
     }
     // Parent
     else {
-      // Save pid for later use
-      pids[i] = pid;
       // Calculate # of countries for the current worker using uniforn distribution round robbin algorithm
       workerCountries = CEIL(currentCountries,numWorkers - i);
       // Open pipe for writing to the worker process
       int fd = open(fifo_aggregator_to_worker[i],O_WRONLY);
+      // Create a list of the countries that this process will work on
+      List pidCountries;
+      if (!List_Initialize(&pidCountries)) {
+        middle_free();
+        close(fd);
+        return 1;
+      }
+      // Insert pid and the list above to the pidCountries hash table
+      char pidStr[sizeof(pid_t) + 1];
+      sprintf(pidStr,"%d",pid);
+      if (!HashTable_Insert(pidCountriesHT,pidStr,pidCountries)) {
+        List_Destroy(&pidCountries);
+        middle_free();
+        close(fd);
+        return 1;
+      }
+      // Insert the fifo's to the hashtables
+      string fifo1Copy = CopyString(fifo_aggregator_to_worker[i]);
+      if (!HashTable_Insert(pid_fifo_aggregator_to_workerHT,pidStr,fifo1Copy)) {
+        DestroyString(&fifo1Copy);
+        List_Destroy(&pidCountries);
+        middle_free();
+        close(fd);
+        return 1;
+      }
+      string fifo2Copy = CopyString(fifo_worker_to_aggregator[i]);
+      if (!HashTable_Insert(pid_fifo_worker_to_aggregatorHT,pidStr,fifo2Copy)) {
+        DestroyString(&fifo2Copy);
+        DestroyString(&fifo1Copy);
+        List_Destroy(&pidCountries);
+        middle_free();
+        close(fd);
+        return 1;
+      }
       // Distribute country directories to the worker process
       for (j = 0;j < workerCountries && countriesIt != NULL;j++) {
         // Insert country to the countries hashTable
         pid_t *pidPtr;
         if ((pidPtr = (pid_t*)malloc(sizeof(pid_t))) == NULL) {
+          DestroyString(&fifo2Copy);
+          DestroyString(&fifo1Copy);
           not_enough_memory();
-          HashTable_Destroy(&countryToPidMap,NULL);
-          List_Destroy(&countryList);
-          free(input_dir);
+          middle_free();
+          close(fd);
           return 1;
         }
         memcpy(pidPtr,&pid,sizeof(pid_t));
         if (!HashTable_Insert(countryToPidMap,ListIterator_GetValue(countriesIt),pidPtr)) {
-          HashTable_Destroy(&countryToPidMap,NULL);
-          List_Destroy(&countryList);
-          free(input_dir);
+          DestroyString(&fifo2Copy);
+          DestroyString(&fifo1Copy);
+          middle_free();
+          close(fd);
+          return 1;
+        }
+        // Insert country to the hash table's list
+        if (!List_Insert(pidCountries,ListIterator_GetValue(countriesIt))) {
+          DestroyString(&fifo2Copy);
+          DestroyString(&fifo1Copy);
+          middle_free();
+          close(fd);
           return 1;
         }
         // Send country to worker process
@@ -304,20 +455,16 @@ int main(int argc, char const *argv[]) {
     free(args);
     DestroyString(&line);
   }
+  // Unregister SIGUSR handler because when the aggregator finishes execution we do not need to respawn children
+  signal(SIGCHLD,SIG_DFL);
   // Kill all the processes and close all the fifo's
-  for (i = 0;i < numWorkers;i++) {
-    kill(pids[i],SIGKILL);
-  }
+  HashTable_ExecuteFunctionForAllKeys(pidCountriesHT,kill_all_workers,0);
   // Wait for workers to finish execution
   for (i = 0;i < numWorkers;i++) {
     int exit_status;
     pid_t exited_pid;
     if ((exited_pid = wait(&exit_status)) == -1) {
       perror("Wait failed");
-      HashTable_Destroy(&countryToPidMap,NULL);
-      List_Destroy(&countryList);
-      free(input_dir);
-      return 1;
     }
   }
   // Destroy all fifo's
@@ -337,6 +484,9 @@ int main(int argc, char const *argv[]) {
   fprintf(output,"TOTAL %u\nSUCCESS %u\nFAIL %u\n",TOTAL,SUCCESS,TOTAL - SUCCESS);
   fclose(output);
   HashTable_ExecuteFunctionForAllKeys(countryToPidMap,destroyCountriesHT,0);
+  HashTable_Destroy(&pid_fifo_worker_to_aggregatorHT,(int (*)(void**))DestroyString);
+  HashTable_Destroy(&pid_fifo_aggregator_to_workerHT,(int (*)(void**))DestroyString);
+  HashTable_Destroy(&pidCountriesHT,(int (*)(void**))List_Destroy);
   HashTable_Destroy(&countryToPidMap,NULL);
   List_Destroy(&countryList);
   free(input_dir);

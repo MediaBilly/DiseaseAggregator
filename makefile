@@ -1,5 +1,5 @@
 CC = gcc
-FLAGS = -Wall
+FLAGS = -Wall -g3
 TARGETS = diseaseAggregator worker
 OBJS = diseaseAggregator.o utils.o hashtable.o worker.o list.o patientRecord.o avltree.o
 SRC_DIR = ./src

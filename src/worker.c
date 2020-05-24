@@ -110,7 +110,7 @@ void read_input_files() {
           }
           // Maps a disease to a filestat structure to hold summary statistics for that file
           HashTable filestatsHT;
-          if (!HashTable_Create(&filestatsHT,200,100)) {
+          if (!HashTable_Create(&filestatsHT,200)) {
             continue;
           }
           // Insert the file path in the country files hashtable with an empty list
@@ -145,7 +145,7 @@ void read_input_files() {
                     HashTable diseaseHT;
                     if ((diseaseHT = HashTable_SearchKey(recordsHT,country)) == NULL) {
                       // Not exisits so create a hashtable for that disease
-                      if (HashTable_Create(&diseaseHT,200,100)) {
+                      if (HashTable_Create(&diseaseHT,200)) {
                         HashTable_Insert(recordsHT,country,diseaseHT);
                       }
                     }
@@ -269,16 +269,16 @@ int main(int argc, char const *argv[]) {
   free(countries);
   close(fifo_aggregator_to_worker_fd);
   // Initialize hashtables
-  if (!HashTable_Create(&recordsHT,200,100)) {
+  if (!HashTable_Create(&recordsHT,200)) {
     List_Destroy(&countriesList);
     return 1;
   }
-  if (!HashTable_Create(&recordsByIdHT,200,100)) {
+  if (!HashTable_Create(&recordsByIdHT,200)) {
     HashTable_Destroy(&recordsHT,NULL);
     List_Destroy(&countriesList);
     return 1;
   }
-  if (!HashTable_Create(&countryFilesHT,200,100)) {
+  if (!HashTable_Create(&countryFilesHT,200)) {
     HashTable_Destroy(&recordsByIdHT,NULL);
     HashTable_Destroy(&recordsHT,NULL);
     List_Destroy(&countriesList);
