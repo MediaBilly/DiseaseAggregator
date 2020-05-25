@@ -5,6 +5,7 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <dirent.h>
 #include <fcntl.h>
@@ -25,6 +26,9 @@ boolean running;
 string input_dir;
 unsigned int TOTAL,SUCCESS;
 unsigned int numWorkers,bufferSize;
+// Temporary set of pipe descriptors used by select() function
+fd_set pipe_fd_set;
+int maxFd;
 
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
@@ -72,7 +76,7 @@ void respawn_worker() {
   else if (newPID == 0) {
     char bufSize[10];
     sprintf(bufSize,"%d",bufferSize);
-    execl("./worker","worker",fifo_aggregator_to_worker,fifo_worker_to_aggregator,input_dir,bufSize,NULL);
+    execl("./worker","worker",fifo_aggregator_to_worker,fifo_worker_to_aggregator,input_dir,bufSize,"-nostats",NULL);
     perror("Exec failed");
     exit(1);
   }
@@ -113,13 +117,13 @@ void respawn_worker() {
 
 // Read emergency statistics from new files loaded from a worker after he received SIGUSR1 signal
 void async_statistics() {
-
+  
 }
 
 void kill_all_workers(string pidstr,void *listptr,int argc,va_list valist) {
   pid_t pid = atoi(pidstr);
   printf("KILLING: %d\n",pid);
-  kill(pid,SIGKILL);// THE ASSIGNMENT WANTS SIGKILL FOR SOME REASON BUT IT'S AN IRREGULAR METHOD SO SEND SIGINT FOR THE MOMENT
+  kill(pid,SIGINT);// THE ASSIGNMENT WANTS SIGKILL FOR SOME REASON BUT IT'S AN IRREGULAR METHOD SO SEND SIGINT FOR THE MOMENT
 }
 
 void middle_free() {
@@ -131,12 +135,33 @@ void middle_free() {
   free(input_dir);
 }
 
+void send_data_to_all_workers(string pidStr,void *fifo,int argc,va_list valist) {
+  char* data = va_arg(valist,char*);
+  unsigned int dataSize = va_arg(valist,unsigned int);
+  int fd = open((const char*)fifo,O_WRONLY);
+  send_data(fd,data,dataSize,bufferSize);
+  close(fd);
+}
+
+// Reads and combines results from all workers for the diseaseFrequency query
+void diseaseFrequencyAllCountries(string pidStr,void *fifo,int argc,va_list valist) {
+  unsigned int *result = va_arg(valist,unsigned int*);
+  int fd = open((const char*)fifo,O_RDONLY);
+  char *receivedData = receive_data(fd,bufferSize,TRUE);
+  *result += atoi(receivedData);
+  free(receivedData);
+  close(fd);
+}
+
 int main(int argc, char const *argv[]) {
+  // Global initializations
+  FD_ZERO(&pipe_fd_set);
   // Register signal handlers
   signal(SIGINT,finish_execution);
   signal(SIGQUIT,finish_execution);
   signal(SIGCHLD,respawn_worker);
-  signal(SIGUSR1,async_statistics);
+  //signal(SIGUSR1,async_statistics);
+  //sigaction(SIGUSR1,&sa,NULL);
   // Check usage
   if (argc != 7) {
     usage();
@@ -394,24 +419,56 @@ int main(int argc, char const *argv[]) {
       DestroyString(&line);
       continue;
     }
+    string fullCommand = CopyString(line);
     argc = wordCount(line);
     args = SplitString(line," ");
     command = args[0];
     // Determine command type
     if (!strcmp("/listCountries",command)) {
+      TOTAL += 1;
+      SUCCESS += 1;
       HashTable_ExecuteFunctionForAllKeys(countryToPidMap,printCountryPIDs,0);
     } else if (!strcmp("/exit",command)) {
       // TODO: kill worker processes (for the moment they stop themselves without waiting for queries)
       running = FALSE;
     } else if (!strcmp("/diseaseFrequency",command)) {
-      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
-      send_data(fd,"/diseaseFrequency",strlen("/diseaseFrequency"),bufferSize);
-      close(fd);
-      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
-      char *answer = receive_data(readFd,bufferSize,TRUE);
-      printf("%s\n",answer);
-      free(answer);
-      close(readFd);
+      TOTAL += 1;
+      // Usage check
+      if (argc == 5) {
+        // Country given so query the worker which is responsible for that country
+        // Get the country
+        string country = args[4];
+        // Get responsible pid
+        pid_t *queryPID = HashTable_SearchKey(countryToPidMap,country);
+        if (queryPID != NULL) {
+          char queryPidStr[sizeof(pid_t) + 1];
+          sprintf(queryPidStr,"%d",*queryPID);
+          // Send the command to the worker
+          int fd = open(HashTable_SearchKey(pid_fifo_aggregator_to_workerHT,queryPidStr),O_WRONLY);
+          send_data(fd,fullCommand,strlen(fullCommand),bufferSize);
+          close(fd);
+          // Get the answer
+          int readFd = open(HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,queryPidStr),O_RDONLY);
+          char *answer = receive_data(readFd,bufferSize,TRUE);
+          printf("%s\n",answer);
+          free(answer);
+          close(readFd);
+          SUCCESS += 1;
+        } else {
+          fprintf(stderr,"Country %s not found.\n",country);
+        }
+      } else if (argc == 4) {
+        // No country given so request all the workers
+        // Send the command to all the workers
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
+        // Read results from all workers, sum them and print the final sum
+        unsigned int result = 0;
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,diseaseFrequencyAllCountries,1,&result);
+        printf("%u\n",result);
+        SUCCESS += 1;
+      } else {
+        printf("Usage:/diseaseFrequency virusName date1 date2 [country]\n");
+      }
     } else if (!strcmp("/topk-AgeRanges",command)) {
       int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
       send_data(fd,"/topk-AgeRanges",strlen("/topk-AgeRanges"),bufferSize);
@@ -454,8 +511,9 @@ int main(int argc, char const *argv[]) {
     // Free some memory
     free(args);
     DestroyString(&line);
+    DestroyString(&fullCommand);
   }
-  // Unregister SIGUSR handler because when the aggregator finishes execution we do not need to respawn children
+  // Unregister SIGCHLD handler because when the aggregator finishes execution we do not need to respawn children
   signal(SIGCHLD,SIG_DFL);
   // Kill all the processes and close all the fifo's
   HashTable_ExecuteFunctionForAllKeys(pidCountriesHT,kill_all_workers,0);

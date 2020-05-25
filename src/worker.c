@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/types.h>
+#include <sys/select.h>
 #include <dirent.h>
 #include "../headers/list.h"
 #include "../headers/hashtable.h"
@@ -32,6 +33,7 @@ HashTable countryFilesHT;
 
 unsigned int bufferSize,TOTAL,SUCCESS;
 string fifo_worker_to_aggregator,fifo_aggregator_to_worker,input_dir;
+boolean sendStats;
 boolean running = TRUE;
 
 void destroyCountryHTdiseaseTables(string disease,void *ht,int argc,va_list valist) {
@@ -81,7 +83,10 @@ void logfile(int signum) {
 
 void read_input_files() {
   // Open fifo_worker_to_aggregator to send summary statistics back to the aggregator
-  int fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
+  int fifo_worker_to_aggregator_fd;
+  if (sendStats) {
+    fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
+  }
   // Foreach country read all the files contained in it's folder and save the records
   ListIterator countriesIterator = List_CreateIterator(countriesList);
   while (countriesIterator != NULL) {
@@ -110,7 +115,7 @@ void read_input_files() {
           }
           // Maps a disease to a filestat structure to hold summary statistics for that file
           HashTable filestatsHT;
-          if (!HashTable_Create(&filestatsHT,200)) {
+          if (sendStats && !HashTable_Create(&filestatsHT,200)) {
             continue;
           }
           // Insert the file path in the country files hashtable with an empty list
@@ -163,25 +168,27 @@ void read_input_files() {
                       if (diseaseTree != NULL) {
                         AvlTree_Insert(diseaseTree,record);
                         // Update statistics for that file
-                        filestat *stats;
-                        if ((stats = (filestat*)HashTable_SearchKey(filestatsHT,disease)) == NULL) {
-                          if ((stats = (filestat*)malloc(sizeof(filestat))) != NULL) {
-                            memset(stats,0,sizeof(filestat));
-                            if (!HashTable_Insert(filestatsHT,disease,stats)) {
-                              free(stats);
-                              continue;
+                        if (sendStats) {
+                          filestat *stats;
+                          if ((stats = (filestat*)HashTable_SearchKey(filestatsHT,disease)) == NULL) {
+                            if ((stats = (filestat*)malloc(sizeof(filestat))) != NULL) {
+                              memset(stats,0,sizeof(filestat));
+                              if (!HashTable_Insert(filestatsHT,disease,stats)) {
+                                free(stats);
+                                continue;
+                              }
                             }
                           }
-                        }
-                        if (stats != NULL) {
-                          if (0 <= age && age <= 20) {
-                            stats->years0to20++;
-                          } else if (21 <= age && age <= 40) {
-                            stats->years21to40++;
-                          } else if (41 <= age && age <= 60) {
-                            stats->years41to60++;
-                          } else {
-                            stats->years60plus++;
+                          if (stats != NULL) {
+                            if (0 <= age && age <= 20) {
+                              stats->years0to20++;
+                            } else if (21 <= age && age <= 40) {
+                              stats->years21to40++;
+                            } else if (41 <= age && age <= 60) {
+                              stats->years41to60++;
+                            } else {
+                              stats->years60plus++;
+                            }
                           }
                         }
                       }
@@ -204,16 +211,18 @@ void read_input_files() {
             }
           }
           // Send file's summary statistics to the aggregator
-          char headerBuf[strlen(date) + strlen(country) + 2];
-          sprintf(headerBuf,"%s\n%s\n",date,country);
-          // Send the header
-          send_data(fifo_worker_to_aggregator_fd,headerBuf,sizeof(headerBuf),bufferSize);
-          HashTable_ExecuteFunctionForAllKeys(filestatsHT,summaryStatistics,1,fifo_worker_to_aggregator_fd);
+          if (sendStats) {
+            char headerBuf[strlen(date) + strlen(country) + 2];
+            sprintf(headerBuf,"%s\n%s\n",date,country);
+            // Send the header
+            send_data(fifo_worker_to_aggregator_fd,headerBuf,sizeof(headerBuf),bufferSize);
+            HashTable_ExecuteFunctionForAllKeys(filestatsHT,summaryStatistics,1,fifo_worker_to_aggregator_fd);
+            // Destroy filestats hash table
+            HashTable_ExecuteFunctionForAllKeys(filestatsHT,destroyDiseaseFilestatsFromHT,0);
+            HashTable_Destroy(&filestatsHT,NULL);
+          }
           free(line);
           fclose(recordsFile);
-          // Destroy filestats hash table
-          HashTable_ExecuteFunctionForAllKeys(filestatsHT,destroyDiseaseFilestatsFromHT,0);
-          HashTable_Destroy(&filestatsHT,NULL);
         }
       }
       // Close countries directory
@@ -224,7 +233,9 @@ void read_input_files() {
     ListIterator_MoveToNext(&countriesIterator);
   }
   // Close fifo_worker_to_aggregator_fd
-  close(fifo_worker_to_aggregator_fd);
+  if (sendStats) {
+    close(fifo_worker_to_aggregator_fd);
+  }
 }
 
 void reload_files() {
@@ -235,13 +246,36 @@ void reload_files() {
   kill(getppid(),SIGUSR1);
 }
 
+void usage() {
+  fprintf(stderr,"Usage:./worker fifo_aggregator_to_worker fifo_worker_to_aggregator input_dir bufferSize [-nostats]\n");
+}
+
+void send_data_to_aggregator(char *data) {
+  int writeFd = open(fifo_worker_to_aggregator,O_WRONLY);
+  send_data(writeFd,data,strlen(data),bufferSize);
+  close(writeFd);
+}
+
+void diseaseFrequencyAllCountries(string country,void *ht,int argc,va_list valist) {
+  string virusName = va_arg(valist,string);
+  time_t date1 = va_arg(valist,time_t);
+  time_t date2 = va_arg(valist,time_t);
+  unsigned int *result = va_arg(valist,unsigned int*);
+  // Get country's disease hash table
+  HashTable virusHT = HashTable_SearchKey(recordsHT,country);
+  // Get disease's avl tree
+  AvlTree tree = HashTable_SearchKey(virusHT,virusName);
+  // Update the result with the current country results
+  *result += AvlTree_NumRecordsInDateRange(tree,date1,date2);
+}
+
 int main(int argc, char const *argv[]) {
   // Register signal handlers
   signal(SIGINT,logfile);
   signal(SIGQUIT,logfile);
   signal(SIGUSR1,reload_files);
-  if (argc != 5) {
-    fprintf(stderr,"Usage:./worker fifo_aggregator_to_worker fifo_worker_to_aggregator input_dir bufferSize\n");
+  if (argc < 5 || argc > 6) {
+    usage();
     return 1;
   }
   // Read arguments
@@ -249,6 +283,18 @@ int main(int argc, char const *argv[]) {
   fifo_aggregator_to_worker = (string)argv[1]; 
   input_dir = (string) argv[3];
   bufferSize = atoi(argv[4]);
+  // No stats is no necessary argument. If specified, the worker will not send any stats to the aggregator.
+  // It is set when this worker is a replacement of another one which was terminated
+  if (argc == 6) {
+    if (strcmp(argv[5],"-nostats")) {
+      usage();
+      return 1;
+    } else {
+      sendStats = FALSE;
+    }
+  } else {
+    sendStats = TRUE;
+  }
   // Open fifo_aggregator_to_worker to read the country directory names to be opened
   int fifo_aggregator_to_worker_fd = open(fifo_aggregator_to_worker,O_RDONLY);
   // Initialize countries list
@@ -288,16 +334,74 @@ int main(int argc, char const *argv[]) {
   // Wait for commands from the aggregator
   char *receivedData;
   int readFd  = open(fifo_aggregator_to_worker,O_RDONLY | O_NONBLOCK);
+  unsigned int cmdArgc;
+  string *args,command;
+  fd_set readFdSet;
   while(running) {
     // Read command
-    receivedData = receive_data(readFd,bufferSize,TRUE);
-    if (receivedData > 0) {
-      // TODO: Do sth with the received data(commands).For now,just echo it
-      //printf("%s\n",receivedData);
-      int writeFd = open(fifo_worker_to_aggregator,O_WRONLY);
-      send_data(writeFd,receivedData,strlen(receivedData),bufferSize);
-      free(receivedData);
-      close(writeFd);
+    FD_ZERO(&readFdSet);
+    FD_SET(readFd,&readFdSet);
+    int selRes = select(readFd + 1,&readFdSet,NULL,NULL,NULL);
+    if (selRes == -1) {
+      perror("select() error");
+      continue;
+    }
+    if (selRes > 0) {
+      receivedData = receive_data(readFd,bufferSize,TRUE);
+      if (receivedData != NULL) {
+        // Read command(query)
+        cmdArgc = wordCount(receivedData);
+        args = SplitString(receivedData," ");
+        command = args[0];
+        // Execute command
+        if (!strcmp(command,"/diseaseFrequency")) {
+          TOTAL += 1;
+          // Get virusName(disease)
+          string virusName = args[1];
+          // Parse dates
+          struct tm tmpTime;
+          memset(&tmpTime,0,sizeof(struct tm));
+          if (strptime(args[2],"%d-%m-%Y",&tmpTime) != NULL) {
+            time_t date1 = mktime(&tmpTime);
+            if (strptime(args[3],"%d-%m-%Y",&tmpTime) != NULL) {
+              time_t date2 = mktime(&tmpTime);
+              // Date  Parsing done
+              // Check if country was specified
+              if (cmdArgc == 5) {
+                // Country specified
+                string country = args[4];
+                // Get country's disease hash table
+                HashTable virusHT = HashTable_SearchKey(recordsHT,country);
+                // Get disease's avl tree
+                AvlTree tree = HashTable_SearchKey(virusHT,virusName);
+                char result[sizeof(unsigned int) + 1];
+                sprintf(result,"%u",AvlTree_NumRecordsInDateRange(tree,date1,date2));
+                send_data_to_aggregator(result);
+                SUCCESS += 1;
+              } else if (cmdArgc == 4) {
+                unsigned int result = 0;
+                HashTable_ExecuteFunctionForAllKeys(recordsHT,diseaseFrequencyAllCountries,4,virusName,date1,date2,&result);
+                char resultStr[sizeof(unsigned int)];
+                sprintf(resultStr,"%u",result);
+                send_data_to_aggregator(resultStr);
+                SUCCESS += 1;
+              } else {
+                send_data_to_aggregator("0");
+              }
+            } else {
+              fprintf(stderr,"date2 parsing failed.\n");
+              send_data_to_aggregator("0");
+            }
+          } else {
+            fprintf(stderr,"date1 parsing failed.\n");
+            send_data_to_aggregator("0");
+          }
+        } else {
+          send_data_to_aggregator(receivedData);
+        }
+        free(receivedData);
+        free(args);
+      }
     }
   }
   close(readFd);
