@@ -122,7 +122,7 @@ void async_statistics() {
 
 void kill_all_workers(string pidstr,void *listptr,int argc,va_list valist) {
   pid_t pid = atoi(pidstr);
-  printf("KILLING: %d\n",pid);
+  //printf("KILLING: %d\n",pid);
   kill(pid,SIGINT);// THE ASSIGNMENT WANTS SIGKILL FOR SOME REASON BUT IT'S AN IRREGULAR METHOD SO SEND SIGINT FOR THE MOMENT
 }
 
@@ -149,6 +149,26 @@ void diseaseFrequencyAllCountries(string pidStr,void *fifo,int argc,va_list vali
   int fd = open((const char*)fifo,O_RDONLY);
   char *receivedData = receive_data(fd,bufferSize,TRUE);
   *result += atoi(receivedData);
+  free(receivedData);
+  close(fd);
+}
+
+void searchPatientRecord(string pidStr,void *fifo,int argc,va_list valist) {
+  boolean *found = va_arg(valist,boolean*);
+  int fd = open((const char*)fifo,O_RDONLY);
+  char *receivedData = receive_data(fd,bufferSize,TRUE);
+  if (strcmp(receivedData,"nf")) {
+    printf("%s",receivedData);
+    *found = TRUE;
+  }
+  free(receivedData);
+  close(fd);
+}
+
+void printResultsFromAllWorkers(string pidStr,void *fifo,int argc,va_list valist) {
+  int fd = open((const char*)fifo,O_RDONLY);
+  char *receivedData = receive_data(fd,bufferSize,TRUE);
+  printf("%s",receivedData);
   free(receivedData);
   close(fd);
 }
@@ -479,23 +499,53 @@ int main(int argc, char const *argv[]) {
       free(answer);
       close(readFd);
     } else if (!strcmp("/searchPatientRecord",command)) {
-      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
-      send_data(fd,"/searchPatientRecord",strlen("/searchPatientRecord"),bufferSize);
-      close(fd);
-      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
-      char *answer = receive_data(readFd,bufferSize,TRUE);
-      printf("%s\n",answer);
-      free(answer);
-      close(readFd);
+      TOTAL += 1;
+      // Send the command to all the workers
+      HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
+      boolean found = FALSE;
+      // Wait for answers
+      HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,searchPatientRecord,1,&found);
+      // If not found print NOT FOUND
+      if (!found) {
+        printf("NOT FOUND\n");
+      }
+      SUCCESS += 1;
     } else if (!strcmp("/numPatientAdmissions",command)) {
-      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
-      send_data(fd,"/numPatientAdmissions",strlen("/numPatientAdmissions"),bufferSize);
-      close(fd);
-      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
-      char *answer = receive_data(readFd,bufferSize,TRUE);
-      printf("%s\n",answer);
-      free(answer);
-      close(readFd);
+      TOTAL += 1;
+      // Usage check
+      if (argc == 5) {
+        // Country given so query the worker which is responsible for that country
+        // Get the country
+        string country = args[4];
+        // Get responsible pid
+        pid_t *queryPID = HashTable_SearchKey(countryToPidMap,country);
+        if (queryPID != NULL) {
+          char queryPidStr[sizeof(pid_t) + 1];
+          sprintf(queryPidStr,"%d",*queryPID);
+          // Send the command to the worker
+          int fd = open(HashTable_SearchKey(pid_fifo_aggregator_to_workerHT,queryPidStr),O_WRONLY);
+          send_data(fd,fullCommand,strlen(fullCommand),bufferSize);
+          close(fd);
+          // Get the answer
+          int readFd = open(HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,queryPidStr),O_RDONLY);
+          char *answer = receive_data(readFd,bufferSize,TRUE);
+          printf("%s",answer);
+          free(answer);
+          close(readFd);
+          SUCCESS += 1;
+        } else {
+          fprintf(stderr,"Country %s not found.\n",country);
+        }
+      } else if (argc == 4) {
+        // No country given so request all the workers
+        // Send the command to all the workers
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
+        // Read results from all workers, sum them and print the final sum
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,printResultsFromAllWorkers,0);
+        SUCCESS += 1;
+      } else {
+        printf("Usage:/numPatientAdmissions disease date1 date2 [country]\n");
+      }
     } else if (!strcmp("/numPatientDischarges",command)) {
       int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
       send_data(fd,"/numPatientDischarges",strlen("/numPatientDischarges"),bufferSize);

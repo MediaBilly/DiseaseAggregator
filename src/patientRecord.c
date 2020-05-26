@@ -50,6 +50,7 @@ patientRecord PatientRecord_Create(string recordID,string patientFirstName,strin
     record->entryDate = mktime(&tmpTime);
   }
   record->age = age;
+  record->exited = FALSE;
   //printf("Record added\n");
   return record;
 }
@@ -91,6 +92,23 @@ int PatientRecord_Exit(patientRecord record,string exitDateStr) {
   } else {
     printf("Wrong date format.\n");
     return FALSE;
+  }
+}
+
+string PatientRecord_ToString(patientRecord record) {
+  string ret;
+  if ((ret = (string)malloc(strlen(record->recordID) + strlen(record->patientFirstName) + strlen(record->patientLastName) + strlen(record->disease) + digits(record->age) + 28)) != NULL) {
+    char date1[11],date2[11];
+    strftime(date1,11,"%d-%m-%Y",localtime(&record->entryDate));
+    if (record->exited) {
+      strftime(date2,11,"%d-%m-%Y",localtime(&record->exitDate));
+    } else {
+      strcpy(date2,"--");
+    }
+    sprintf(ret,"%s %s %s %s %d %s %s\n",record->recordID,record->patientFirstName,record->patientLastName,record->disease,record->age,date1,date2);
+    return ret;
+  } else {
+    return NULL;
   }
 }
 

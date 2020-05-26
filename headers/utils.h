@@ -22,5 +22,6 @@ char *receive_data(int,unsigned int,boolean);
 unsigned int wordCount(string);
 string IgnoreNewLine(string);
 string* SplitString(string,string);
+int digits(unsigned int);
 
 #endif

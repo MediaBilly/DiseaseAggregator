@@ -18,6 +18,7 @@ string PatientRecord_Get_disease(patientRecord);
 int PatientRecord_Get_age(patientRecord);
 time_t PatientRecord_Get_entryDate(patientRecord);
 time_t PatientRecord_Get_exitDate(patientRecord);
+string PatientRecord_ToString(patientRecord);
 // Exit date updater
 int PatientRecord_Exit(patientRecord,string);
 // Destroys a patientRecord object
