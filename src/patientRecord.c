@@ -75,22 +75,34 @@ time_t PatientRecord_Get_exitDate(patientRecord record) {
   return record->exited ? record->exitDate : 0;
 }
 
+int PatientRecord_Get_age(patientRecord record) {
+  return record->age;
+}
+
 int PatientRecord_Exit(patientRecord record,string exitDateStr) {
-  struct tm tmpTime;
-  memset(&tmpTime,0,sizeof(struct tm));
-  time_t exitDate;
-  if (strptime(exitDateStr,"%d-%m-%Y",&tmpTime) != NULL) {
-    if (difftime((exitDate = mktime(&tmpTime)),record->entryDate) >= 0) {
-      record->exitDate = exitDate;
-      record->exited = TRUE;
-      //printf("Record updated\n");
-      return TRUE;
+  if (!(record->exited)) {
+    struct tm tmpTime;
+    memset(&tmpTime,0,sizeof(struct tm));
+    time_t exitDate;
+    if (strptime(exitDateStr,"%d-%m-%Y",&tmpTime) != NULL) {
+      if (difftime((exitDate = mktime(&tmpTime)),record->entryDate) >= 0) {
+        record->exitDate = exitDate;
+        record->exited = TRUE;
+        printf("Record updated\n");
+        return TRUE;
+      } else {
+        printf("The exitDate of the record with id %s is earlier than it's entryDate. Ignoring update.\n",record->recordID);
+        return FALSE;
+      }
     } else {
-      //printf("The exitDate of the record with id %s is earlier than it's entryDate. Ignoring update.\n",record->recordID);
+      fprintf(stderr,"Wrong date format.\n");
       return FALSE;
     }
   } else {
-    printf("Wrong date format.\n");
+    fprintf(stderr,"The following patient has already exited: ");
+    string recStr = PatientRecord_ToString(record);
+    fprintf(stderr,"%s",recStr);
+    free(recStr);
     return FALSE;
   }
 }

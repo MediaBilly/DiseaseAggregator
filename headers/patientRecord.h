@@ -12,8 +12,6 @@ patientRecord PatientRecord_Create(string,string,string,string,string,int);
 int PatientRecord_Exited(patientRecord);
 // Getters
 string PatientRecord_Get_recordID(patientRecord);
-string PatientRecord_Get_patientFirstName(patientRecord);
-string PatientRecord_Get_patientLastName(patientRecord);
 string PatientRecord_Get_disease(patientRecord);
 int PatientRecord_Get_age(patientRecord);
 time_t PatientRecord_Get_entryDate(patientRecord);

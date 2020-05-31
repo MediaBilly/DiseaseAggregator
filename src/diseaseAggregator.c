@@ -115,11 +115,6 @@ void respawn_worker() {
   }
 }
 
-// Read emergency statistics from new files loaded from a worker after he received SIGUSR1 signal
-void async_statistics() {
-  
-}
-
 void kill_all_workers(string pidstr,void *listptr,int argc,va_list valist) {
   pid_t pid = atoi(pidstr);
   //printf("KILLING: %d\n",pid);
@@ -180,8 +175,6 @@ int main(int argc, char const *argv[]) {
   signal(SIGINT,finish_execution);
   signal(SIGQUIT,finish_execution);
   signal(SIGCHLD,respawn_worker);
-  //signal(SIGUSR1,async_statistics);
-  //sigaction(SIGUSR1,&sa,NULL);
   // Check usage
   if (argc != 7) {
     usage();
@@ -426,6 +419,7 @@ int main(int argc, char const *argv[]) {
   string *args;
   size_t len;
   while (running) {
+    putchar('>');
     // Read command name
     if(getline(&line,&len,stdin) == -1) {
       if (line != NULL) {
@@ -446,11 +440,20 @@ int main(int argc, char const *argv[]) {
     // Determine command type
     if (!strcmp("/listCountries",command)) {
       TOTAL += 1;
-      SUCCESS += 1;
-      HashTable_ExecuteFunctionForAllKeys(countryToPidMap,printCountryPIDs,0);
+      // Usage check 
+      if (argc == 1) {
+        SUCCESS += 1;
+        HashTable_ExecuteFunctionForAllKeys(countryToPidMap,printCountryPIDs,0);
+      } else {
+        printf("Usage:/listCountries\n");
+      }
     } else if (!strcmp("/exit",command)) {
-      // TODO: kill worker processes (for the moment they stop themselves without waiting for queries)
-      running = FALSE;
+      // Usage check
+      if (argc == 1) {
+        running = FALSE;
+      } else {
+        printf("Usage:/exit\n");
+      }
     } else if (!strcmp("/diseaseFrequency",command)) {
       TOTAL += 1;
       // Usage check
@@ -490,26 +493,50 @@ int main(int argc, char const *argv[]) {
         printf("Usage:/diseaseFrequency virusName date1 date2 [country]\n");
       }
     } else if (!strcmp("/topk-AgeRanges",command)) {
-      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
-      send_data(fd,"/topk-AgeRanges",strlen("/topk-AgeRanges"),bufferSize);
-      close(fd);
-      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
-      char *answer = receive_data(readFd,bufferSize,TRUE);
-      printf("%s\n",answer);
-      free(answer);
-      close(readFd);
+      TOTAL += 1;
+      // Usage check
+      if (argc == 6) {
+        // Get the country
+        string country = args[2];
+        // Get responsible pid
+        pid_t *queryPID = HashTable_SearchKey(countryToPidMap,country);
+        if (queryPID != NULL) {
+          char queryPidStr[sizeof(pid_t) + 1];
+          sprintf(queryPidStr,"%d",*queryPID);
+          // Send the command to the worker
+          int fd = open(HashTable_SearchKey(pid_fifo_aggregator_to_workerHT,queryPidStr),O_WRONLY);
+          send_data(fd,fullCommand,strlen(fullCommand),bufferSize);
+          close(fd);
+          // Get the answer
+          int readFd = open(HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,queryPidStr),O_RDONLY);
+          char *answer = receive_data(readFd,bufferSize,TRUE);
+          printf("%s",answer);
+          free(answer);
+          close(readFd);
+          SUCCESS += 1;
+        } else {
+          fprintf(stderr,"Country %s not found.\n",country);
+        }
+      } else {
+        printf("Usage:/topk-AgeRanges k country disease date1 date2\n");
+      }
     } else if (!strcmp("/searchPatientRecord",command)) {
       TOTAL += 1;
-      // Send the command to all the workers
-      HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
-      boolean found = FALSE;
-      // Wait for answers
-      HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,searchPatientRecord,1,&found);
-      // If not found print NOT FOUND
-      if (!found) {
-        printf("NOT FOUND\n");
+      // Usage check
+      if (argc == 2) {
+        // Send the command to all the workers
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
+        boolean found = FALSE;
+        // Wait for answers
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,searchPatientRecord,1,&found);
+        // If not found print NOT FOUND
+        if (!found) {
+          printf("NOT FOUND\n");
+        }
+        SUCCESS += 1;
+      } else {
+        printf("Usage:/searchPatientRecord recordID \n");
       }
-      SUCCESS += 1;
     } else if (!strcmp("/numPatientAdmissions",command)) {
       TOTAL += 1;
       // Usage check
@@ -547,14 +574,41 @@ int main(int argc, char const *argv[]) {
         printf("Usage:/numPatientAdmissions disease date1 date2 [country]\n");
       }
     } else if (!strcmp("/numPatientDischarges",command)) {
-      int fd = open(fifo_aggregator_to_worker[0],O_WRONLY);
-      send_data(fd,"/numPatientDischarges",strlen("/numPatientDischarges"),bufferSize);
-      close(fd);
-      int readFd = open(fifo_worker_to_aggregator[0],O_RDONLY);
-      char *answer = receive_data(readFd,bufferSize,TRUE);
-      printf("%s\n",answer);
-      free(answer);
-      close(readFd);
+      TOTAL += 1;
+      // Usage check
+      if (argc == 5) {
+        // Country given so query the worker which is responsible for that country
+        // Get the country
+        string country = args[4];
+        // Get responsible pid
+        pid_t *queryPID = HashTable_SearchKey(countryToPidMap,country);
+        if (queryPID != NULL) {
+          char queryPidStr[sizeof(pid_t) + 1];
+          sprintf(queryPidStr,"%d",*queryPID);
+          // Send the command to the worker
+          int fd = open(HashTable_SearchKey(pid_fifo_aggregator_to_workerHT,queryPidStr),O_WRONLY);
+          send_data(fd,fullCommand,strlen(fullCommand),bufferSize);
+          close(fd);
+          // Get the answer
+          int readFd = open(HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,queryPidStr),O_RDONLY);
+          char *answer = receive_data(readFd,bufferSize,TRUE);
+          printf("%s",answer);
+          free(answer);
+          close(readFd);
+          SUCCESS += 1;
+        } else {
+          fprintf(stderr,"Country %s not found.\n",country);
+        }
+      } else if (argc == 4) {
+        // No country given so request all the workers
+        // Send the command to all the workers
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_aggregator_to_workerHT,send_data_to_all_workers,2,fullCommand,strlen(fullCommand));
+        // Read results from all workers, sum them and print the final sum
+        HashTable_ExecuteFunctionForAllKeys(pid_fifo_worker_to_aggregatorHT,printResultsFromAllWorkers,0);
+        SUCCESS += 1;
+      } else {
+        printf("Usage:/numPatientDischarges disease date1 date2 [country]\n");
+      }
     } else {
       printf("Command %s not found.\n",command);
     }

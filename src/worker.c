@@ -14,17 +14,11 @@
 #include "../headers/patientRecord.h"
 #include "../headers/avltree.h"
 #include "../headers/utils.h"
-
-typedef struct {
-  unsigned int years0to20;
-  unsigned int years21to40;
-  unsigned int years41to60;
-  unsigned int years60plus;
-} filestat;
+#include "../headers/treestats.h"
 
 // Declare global variables(because they are needed for signal handlers)
 List countriesList;
-// Maps each country to another hash table that maps country's diseases an avl tree that contains their records sorted by entry date
+// Maps each country to another hash table that maps country's diseases to two avl trees, one that contains their records sorted by entry date and one that contains statistics sorted by date 
 HashTable recordsHT;
 // Maps a record's ID to the record itself (used for /searchPatientRecord recordID command)
 HashTable recordsByIdHT;
@@ -74,6 +68,10 @@ void read_input_files() {
   int fifo_worker_to_aggregator_fd;
   if (sendStats) {
     fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
+  }
+  List exitRecords;
+  if (!List_Initialize(&exitRecords)) {
+    return;
   }
   // Foreach country read all the files contained in it's folder and save the records
   ListIterator countriesIterator = List_CreateIterator(countriesList);
@@ -157,6 +155,7 @@ void read_input_files() {
                         AvlTree_Insert(diseaseTree,record);
                         // Update statistics for that file
                         if (sendStats) {
+                          // Update file statistics 
                           filestat *stats;
                           if ((stats = (filestat*)HashTable_SearchKey(filestatsHT,disease)) == NULL) {
                             if ((stats = (filestat*)malloc(sizeof(filestat))) != NULL) {
@@ -184,18 +183,14 @@ void read_input_files() {
                   }
                 }
               } else {
-                //fprintf(stderr,"ERROR: Patient record %s %s %s %s %s %d tried to enter the hospital twice before exiting the first time.\n",recordId,type,patientFirstName,patientLastName,disease,age);
+                fprintf(stderr,"ERROR: Patient record %s %s %s %s %s %d tried to enter the hospital twice.\n",recordId,type,patientFirstName,patientLastName,disease,age);
               }
             } else if (!strcmp(type,"EXIT")) {
               // Patient exits
-              patientRecord record;
-              // Check if he already entered
-              if ((record = HashTable_SearchKey(recordsByIdHT,recordId)) != NULL) {
-                // If so mark him as exited
-                PatientRecord_Exit(record,date);
-              } else {
-                //fprintf(stderr,"ERROR: Patient record %s %s %s %s %s %d tried to exit the hospital before entering.\n",recordId,type,patientFirstName,patientLastName,disease,age);
-              }
+              // Save the id and the date of the exited record in a list
+              char exitRecordData[strlen(recordId) + strlen(date) + 1];
+              sprintf(exitRecordData,"%s %s",recordId,date);
+              List_Insert(exitRecords,exitRecordData);
             }
           }
           // Send file's summary statistics to the aggregator
@@ -209,6 +204,7 @@ void read_input_files() {
             HashTable_ExecuteFunctionForAllKeys(filestatsHT,destroyDiseaseFilestatsFromHT,0);
             HashTable_Destroy(&filestatsHT,NULL);
           }
+          // Get stats tree
           free(line);
           fclose(recordsFile);
         }
@@ -220,6 +216,23 @@ void read_input_files() {
     }
     ListIterator_MoveToNext(&countriesIterator);
   }
+  // Insert EXIT records
+  ListIterator exitRecordsIt = List_CreateIterator(exitRecords);
+  while (exitRecordsIt != NULL) {
+    string exitData = ListIterator_GetValue(exitRecordsIt);
+    string recordId = strtok(exitData," ");
+    string exitDate = strtok(NULL," ");
+    patientRecord record;
+    // Check if he already entered
+    if ((record = HashTable_SearchKey(recordsByIdHT,recordId)) != NULL) {
+      // If so mark him as exited
+      PatientRecord_Exit(record,exitDate);
+    } else {
+      fprintf(stderr,"ERROR: Patient record with id %s tried to exit the hospital at %s before entering.\n",recordId,exitDate);
+    }
+    ListIterator_MoveToNext(&exitRecordsIt);
+  }
+  List_Destroy(&exitRecords);
   // Close fifo_worker_to_aggregator_fd
   if (sendStats) {
     close(fifo_worker_to_aggregator_fd);
@@ -230,8 +243,6 @@ void reload_files() {
   printf("RELOADING WORKER FILES\n");
   // Read records from new files
   read_input_files();
-  // Notify the parent to read the statistics
-  kill(getppid(),SIGUSR1);
 }
 
 void usage() {
@@ -254,7 +265,7 @@ void diseaseFrequencyAllCountries(string country,void *ht,int argc,va_list valis
   // Get disease's avl tree
   AvlTree tree = HashTable_SearchKey(virusHT,virusName);
   // Update the result with the current country results
-  *result += AvlTree_NumRecordsInDateRange(tree,date1,date2);
+  *result += AvlTree_NumRecordsInDateRange(tree,date1,date2,FALSE);
 }
 
 void numPatientAdmissionsAllCountries(string country,void *ht,int argc,va_list valist) {
@@ -267,7 +278,23 @@ void numPatientAdmissionsAllCountries(string country,void *ht,int argc,va_list v
   // Get disease's avl tree
   AvlTree tree = HashTable_SearchKey(virusHT,virusName);
   // Update send current country results to the worker
-  unsigned int result = AvlTree_NumRecordsInDateRange(tree,date1,date2);
+  unsigned int result = AvlTree_NumRecordsInDateRange(tree,date1,date2,FALSE);
+  char dataToSend[strlen(country) + digits(result) + 2];
+  sprintf(dataToSend,"%s %u\n",country,result);
+  send_data(writeFd,dataToSend,strlen(dataToSend),bufferSize);
+}
+
+void numPatientDischargesAllCountries(string country,void *ht,int argc,va_list valist) {
+  string virusName = va_arg(valist,string);
+  time_t date1 = va_arg(valist,time_t);
+  time_t date2 = va_arg(valist,time_t);
+  int writeFd = va_arg(valist,int);
+  // Get country's disease hash table
+  HashTable virusHT = HashTable_SearchKey(recordsHT,country);
+  // Get disease's avl tree
+  AvlTree tree = HashTable_SearchKey(virusHT,virusName);
+  // Update send current country results to the worker
+  unsigned int result = AvlTree_NumRecordsInDateRange(tree,date1,date2,TRUE);
   char dataToSend[strlen(country) + digits(result) + 2];
   sprintf(dataToSend,"%s %u\n",country,result);
   send_data(writeFd,dataToSend,strlen(dataToSend),bufferSize);
@@ -347,6 +374,8 @@ int main(int argc, char const *argv[]) {
     FD_SET(readFd,&readFdSet);
     int selRes = select(readFd + 1,&readFdSet,NULL,NULL,NULL);
     if (selRes == -1) {
+      close(readFd);
+      readFd = open(fifo_aggregator_to_worker,O_RDONLY | O_NONBLOCK);
       continue;
     }
     if (selRes > 0) {
@@ -378,7 +407,7 @@ int main(int argc, char const *argv[]) {
                 // Get disease's avl tree
                 AvlTree tree = HashTable_SearchKey(virusHT,virusName);
                 char result[sizeof(unsigned int) + 1];
-                sprintf(result,"%u",AvlTree_NumRecordsInDateRange(tree,date1,date2));
+                sprintf(result,"%u",AvlTree_NumRecordsInDateRange(tree,date1,date2,FALSE));
                 send_data_to_aggregator(result);
                 SUCCESS += 1;
               } else if (cmdArgc == 4) {
@@ -391,6 +420,37 @@ int main(int argc, char const *argv[]) {
               } else {
                 send_data_to_aggregator("0");
               }
+            } else {
+              fprintf(stderr,"date2 parsing failed.\n");
+              send_data_to_aggregator("0");
+            }
+          } else {
+            fprintf(stderr,"date1 parsing failed.\n");
+            send_data_to_aggregator("0");
+          }
+        } else if (!strcmp(command,"/topk-AgeRanges")) {
+          TOTAL += 1;
+          // Get arguments
+          unsigned int k = atoi(args[1]);
+          string country = args[2];
+          string disease = args[3];
+          // Parse dates
+          struct tm tmpTime;
+          memset(&tmpTime,0,sizeof(struct tm));
+          if (strptime(args[4],"%d-%m-%Y",&tmpTime) != NULL) {
+            time_t date1 = mktime(&tmpTime);
+            if (strptime(args[5],"%d-%m-%Y",&tmpTime) != NULL) {
+              time_t date2 = mktime(&tmpTime);
+              // Date  Parsing done
+              // Get country's disease hash table
+              HashTable diseaseHT = HashTable_SearchKey(recordsHT,country);
+              // Get disease's avl tree
+              AvlTree tree = HashTable_SearchKey(diseaseHT,disease);
+              // Calculate and send result to the aggregator
+              int writeFd = open(fifo_worker_to_aggregator,O_WRONLY);
+              AvlTree_topk_Age_Ranges(tree,date1,date2,k,writeFd,bufferSize);
+              close(writeFd);
+              SUCCESS += 1;
             } else {
               fprintf(stderr,"date2 parsing failed.\n");
               send_data_to_aggregator("0");
@@ -433,7 +493,7 @@ int main(int argc, char const *argv[]) {
                 // Get disease's avl tree
                 AvlTree tree = HashTable_SearchKey(virusHT,virusName);
                 char result[strlen(country) + sizeof(unsigned int) + 2];
-                sprintf(result,"%s %u\n",country,AvlTree_NumRecordsInDateRange(tree,date1,date2));
+                sprintf(result,"%s %u\n",country,AvlTree_NumRecordsInDateRange(tree,date1,date2,FALSE));
                 send_data_to_aggregator(result);
                 SUCCESS += 1;
               } else if (cmdArgc == 4) {
@@ -452,8 +512,48 @@ int main(int argc, char const *argv[]) {
             fprintf(stderr,"date1 parsing failed.\n");
             send_data_to_aggregator("0");
           }
+        } else if (!strcmp(command,"/numPatientDischarges")) {
+          TOTAL += 1;
+          // Get virusName(disease)
+          string virusName = args[1];
+          // Parse dates
+          struct tm tmpTime;
+          memset(&tmpTime,0,sizeof(struct tm));
+          if (strptime(args[2],"%d-%m-%Y",&tmpTime) != NULL) {
+            time_t date1 = mktime(&tmpTime);
+            if (strptime(args[3],"%d-%m-%Y",&tmpTime) != NULL) {
+              time_t date2 = mktime(&tmpTime);
+              // Date  Parsing done
+              // Check if country was specified
+              if (cmdArgc == 5) {
+                // Country specified
+                string country = args[4];
+                // Get country's disease hash table
+                HashTable virusHT = HashTable_SearchKey(recordsHT,country);
+                // Get disease's avl tree
+                AvlTree tree = HashTable_SearchKey(virusHT,virusName);
+                char result[strlen(country) + sizeof(unsigned int) + 2];
+                sprintf(result,"%s %u\n",country,AvlTree_NumRecordsInDateRange(tree,date1,date2,TRUE));
+                send_data_to_aggregator(result);
+                SUCCESS += 1;
+              } else if (cmdArgc == 4) {
+                int writeFd = open(fifo_worker_to_aggregator,O_WRONLY);
+                HashTable_ExecuteFunctionForAllKeys(recordsHT,numPatientDischargesAllCountries,4,virusName,date1,date2,writeFd);
+                close(writeFd);
+                SUCCESS += 1;
+              } else {
+                send_data_to_aggregator("\n");
+              }
+            } else {
+              fprintf(stderr,"date2 parsing failed.\n");
+              send_data_to_aggregator("0");
+            }
+          } else {
+            fprintf(stderr,"date1 parsing failed.\n");
+            send_data_to_aggregator("0");
+          }
         } else {
-          send_data_to_aggregator(receivedData);
+          send_data_to_aggregator("Wrong command\n");
         }
         free(receivedData);
         free(args);
@@ -461,7 +561,6 @@ int main(int argc, char const *argv[]) {
     }
   }
   close(readFd);
-  //printf("FINITO!!!\n");
   // Destroy diseas hash tables in country hash table
   HashTable_ExecuteFunctionForAllKeys(recordsHT,destroyCountryHTdiseaseTables,0);
   // Destroy country hash table
