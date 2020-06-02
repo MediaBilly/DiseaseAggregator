@@ -47,7 +47,7 @@ void finish_execution(int signum) {
   signal(SIGINT,finish_execution);
   signal(SIGQUIT,finish_execution);
   running = FALSE;
-  fclose(stdin);
+  close(0);
 }
 
 void respawn_worker() {
@@ -406,12 +406,20 @@ int main(int argc, char const *argv[]) {
     }
   }
   // Wait for statistics and ready state from all workers
+  // Open all worker's pipes
+  int wfds[numWorkers];
   for (i = 0;i < numWorkers;i++) {
-    int fd = open(fifo_worker_to_aggregator[i],O_RDONLY);
-    char *statistics = receive_data(fd,bufferSize,TRUE);
+    wfds[i] = open(fifo_worker_to_aggregator[i],O_RDONLY);
+  }
+  // Receive stats from all workers
+  for (i = 0;i < numWorkers;i++) {
+    char *statistics = receive_data(wfds[i],bufferSize,TRUE);
     printf("%s\n",statistics);
     free(statistics);
-    close(fd);
+  }
+  // Close worker's pipes
+  for (i = 0;i < numWorkers;i++) {
+    close(wfds[i]);
   }
   // Start command execution
   running = TRUE;
@@ -510,7 +518,7 @@ int main(int argc, char const *argv[]) {
           // Get the answer
           int readFd = open(HashTable_SearchKey(pid_fifo_worker_to_aggregatorHT,queryPidStr),O_RDONLY);
           char *answer = receive_data(readFd,bufferSize,TRUE);
-          printf("%s",answer);
+          printf("%s\n",answer);
           free(answer);
           close(readFd);
           SUCCESS += 1;

@@ -88,10 +88,10 @@ int PatientRecord_Exit(patientRecord record,string exitDateStr) {
       if (difftime((exitDate = mktime(&tmpTime)),record->entryDate) >= 0) {
         record->exitDate = exitDate;
         record->exited = TRUE;
-        printf("Record updated\n");
+        //printf("Record updated\n");
         return TRUE;
       } else {
-        printf("The exitDate of the record with id %s is earlier than it's entryDate. Ignoring update.\n",record->recordID);
+        //printf("The exitDate of the record with id %s is earlier than it's entryDate. Ignoring update.\n",record->recordID);
         return FALSE;
       }
     } else {
@@ -99,9 +99,9 @@ int PatientRecord_Exit(patientRecord record,string exitDateStr) {
       return FALSE;
     }
   } else {
-    fprintf(stderr,"The following patient has already exited: ");
+    //fprintf(stderr,"The following patient has already exited: ");
     string recStr = PatientRecord_ToString(record);
-    fprintf(stderr,"%s",recStr);
+    //fprintf(stderr,"%s",recStr);
     free(recStr);
     return FALSE;
   }

@@ -41,6 +41,16 @@ int DestroyString(string *str) {
   }
 }
 
+// Appends substr to str's end
+int stringAppend(string *str,string substr) {
+  if ((*str = realloc(*str,strlen(*str) + strlen(substr) + 1)) == NULL) {
+      printf("Not enough memory.\n");
+      return 0;
+  }
+  strcpy(*str + strlen(*str),substr);
+  return 1;
+}
+
 // Function to send data to a pipe
 void send_data(int fd,char *data,unsigned int dataSize,unsigned int bufferSize) {
   unsigned int remBytes = dataSize;

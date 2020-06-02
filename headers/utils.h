@@ -16,6 +16,7 @@ int pipe_size();
 void not_enough_memory();
 string CopyString(string);
 int DestroyString(string*);
+int stringAppend(string*,string);
 void send_data(int,char*,unsigned int,unsigned int);
 char *receive_data(int,unsigned int,boolean);
 // Counts # of words in a string
