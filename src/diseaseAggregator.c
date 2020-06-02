@@ -29,6 +29,7 @@ unsigned int numWorkers,bufferSize;
 // Temporary set of pipe descriptors used by select() function
 fd_set pipe_fd_set;
 int maxFd;
+pid_t terminatedChild = -1;
 
 void usage() {
   fprintf(stderr,"Usage:./diseaseAggregator –w numWorkers -b bufferSize -i input_dir\n");
@@ -51,11 +52,9 @@ void finish_execution(int signum) {
 }
 
 void respawn_worker() {
-  signal(SIGCHLD,respawn_worker);
-  // Get the pid of the exited process
-  pid_t exitedPID = wait(NULL);
+  // Convert the terminated child's pid to string for later use
   char pidStr[sizeof(pid_t) + 1];
-  sprintf(pidStr,"%d",exitedPID);
+  sprintf(pidStr,"%d",terminatedChild);
   // Get the countries list of the exited pid
   List countriesList = HashTable_SearchKey(pidCountriesHT,pidStr);
   // Delete old entry from pidCountriesHT
@@ -168,13 +167,18 @@ void printResultsFromAllWorkers(string pidStr,void *fifo,int argc,va_list valist
   close(fd);
 }
 
+void child_terminated(int signum) {
+  // Get the pid of the exited process
+  terminatedChild = wait(NULL);
+}
+
 int main(int argc, char const *argv[]) {
   // Global initializations
   FD_ZERO(&pipe_fd_set);
   // Register signal handlers
   signal(SIGINT,finish_execution);
   signal(SIGQUIT,finish_execution);
-  signal(SIGCHLD,respawn_worker);
+  signal(SIGCHLD,child_terminated);
   // Check usage
   if (argc != 7) {
     usage();
@@ -441,6 +445,11 @@ int main(int argc, char const *argv[]) {
       DestroyString(&line);
       continue;
     }
+    // Respawn lost worker after given command if exists
+    if (terminatedChild != -1) {
+      respawn_worker();
+      terminatedChild = -1;
+    }
     string fullCommand = CopyString(line);
     argc = wordCount(line);
     args = SplitString(line," ");
@@ -624,6 +633,11 @@ int main(int argc, char const *argv[]) {
     free(args);
     DestroyString(&line);
     DestroyString(&fullCommand);
+  }
+  // Check if a lost worker did not respawn before due to SIGINT or SIGQUIT (no command given case) and respawn him just to kill him later
+  if (terminatedChild != -1) {
+    respawn_worker();
+    terminatedChild = -1;
   }
   // Unregister SIGCHLD handler because when the aggregator finishes execution we do not need to respawn children
   signal(SIGCHLD,SIG_DFL);

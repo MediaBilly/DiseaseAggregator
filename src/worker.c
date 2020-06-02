@@ -69,8 +69,8 @@ void read_input_files() {
     if (statistics == NULL) {
       return;
     }
+    strcpy(statistics,"");
   }
-  strcpy(statistics,"");
   while (countriesIterator != NULL) {
     string country = ListIterator_GetValue(countriesIterator);
     DIR *dir_ptr;
@@ -212,15 +212,6 @@ void read_input_files() {
     }
     ListIterator_MoveToNext(&countriesIterator);
   }
-  if (sendStats) {
-    // Open fifo_worker_to_aggregator to send summary statistics back to the aggregator
-    int fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
-    // Send the statistics to the aggregator
-    send_data(fifo_worker_to_aggregator_fd,statistics,strlen(statistics),bufferSize);
-    // Close fifo_worker_to_aggregator_fd
-    close(fifo_worker_to_aggregator_fd);
-    free(statistics);
-  }
   // Insert EXIT records
   ListIterator exitRecordsIt = List_CreateIterator(exitRecords);
   while (exitRecordsIt != NULL) {
@@ -238,6 +229,15 @@ void read_input_files() {
     ListIterator_MoveToNext(&exitRecordsIt);
   }
   List_Destroy(&exitRecords);
+  if (sendStats) {
+    // Open fifo_worker_to_aggregator to send summary statistics back to the aggregator
+    int fifo_worker_to_aggregator_fd = open(fifo_worker_to_aggregator,O_WRONLY);
+    // Send the statistics to the aggregator
+    send_data(fifo_worker_to_aggregator_fd,statistics,strlen(statistics),bufferSize);
+    // Close fifo_worker_to_aggregator_fd
+    close(fifo_worker_to_aggregator_fd);
+    free(statistics);
+  }
   // Never send statistics back ?
   sendStats = FALSE;
 }
